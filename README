@@ -13,13 +13,12 @@ it uses the Mail::Address perl module (from MailTools) to parse mail
 addresses and make them presentable to news clients (which have a
 stricter requirement for the format of the From: header).
 
-it implements all of rfc 977 (although it will refuse all 'ihave'
-commands, and always returns an empty result for 'newnews' commands).
-it also ignores the 'distributions' parameters on the 'newnews' and
-'newgroups' commands.
+it implements all of rfc 977 (although it will always returns an empty
+result for 'newnews' commands). it also ignores the 'distributions'
+parameters on the 'newnews' and 'newgroups' commands.
 
-it implements the extended 'list' , 'mode reader', 'mode stream',
-'xgtitle', and 'xover' commands from rfc 2980.
+it implements the extended 'list', 'mode reader', 'mode stream',
+'xgtitle', 'xhdr', 'xpat', 'xover', and 'xrover' commands from rfc 2980.
 
 (the relevant rfc documents have been included in the distribution,
 by the way.)

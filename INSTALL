@@ -1,4 +1,5 @@
-* edit ./colobus and edit the config section at the top of the file
+* copy ./config.example to ./config and edit as appropriate for your
+  site
 * edit ./run and change the user and group ids used to something
   appropriate
 * edit ./log/run and make sure the logs go where you want
