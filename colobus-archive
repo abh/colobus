@@ -1,0 +1,216 @@
+#!/usr/bin/perl -w
+use strict;
+
+use DBI ();
+use Mail::Address ();
+use Digest::MD5 qw(md5_hex);
+use Symbol qw(gensym);
+use Getopt::Long;
+
+use Data::Dumper;
+
+my $TRACE = -t || $ENV{TRACE};
+
+my $group;
+
+my %groups;
+my %config = (
+  timeout    => 300,
+  servername => 'news',
+);
+
+$| = 1;
+
+my $config = "config";
+my $all;
+GetOptions(
+  "a|all!" => \$all,
+  "c|config=s"   => \$config,
+  "d|debug!"   => \$TRACE,
+);
+
+read_config($config);
+
+sub read_config {
+  my $file = shift;
+  my $fh = Symbol::gensym();
+  open $fh, "<$file"
+    or die "unable to open file '$file': $!";
+
+  while (<$fh>) {
+    chomp;
+    next if m/^\s*#/;
+
+    undef($group), next if m/}/;
+
+    my ($k,$v) = map { s/^\s*(.+?)\s*$/$1/; $_; } split /=>/;
+    if ($k) {
+      read_config($v), next if lc $k eq "include";
+      $groups{$group}{$k} = $v
+        if $group;
+      $config{$k} = $v
+        unless $group;
+    }
+
+    (($group) = m/group\s*(\S+)\s*{/)
+      if !$group;
+  }
+  close $fh;
+}
+
+@ARGV = sort keys %groups if $all;
+
+die "usage: $0 [-a] [-c config] group ...\n" unless @ARGV;
+
+# these are the headers we track for the overview database
+my (@overview) = qw(Subject From Date Message-ID References In-Reply-To Lines);
+my (%overview); @overview{@overview} = ('') x @overview;
+
+my $dsn = $config{'dsn'} || "DBI:mysql:database=colobus;host=localhost";
+my $dbh = DBI->connect($dsn, $config{'dbuser'}, $config{'dbpass'}, { PrintError => 1 })
+  or die($DBI::errstr);
+
+my $ins_header = $dbh->prepare(<<QUERY);
+INSERT INTO header SET 
+  grp = ?,
+  art = ?,
+  msgid = ?,
+  subjhash = ?,
+  fromhash = ?,
+  thread = ?,
+  parent = ?,
+  received = FROM_UNIXTIME(?),
+  h_date = ?,
+  h_messageid = ?,
+  h_from = ?,
+  h_subject = ?,
+  h_references = ?,
+  h_lines = ?
+QUERY
+
+for $group (@ARGV) {
+  next unless $groups{$group}->{'num'};
+  my $grp = $groups{$group}->{'num'};
+
+  print "$group: " if $TRACE;
+
+  my ($indexed) = $dbh->selectrow_array("SELECT MAX(art) FROM header WHERE grp = ?", undef, $grp) || 0;
+
+  open NUM, '<', $groups{$group}->{'path'}."/num"
+    or die "unable to open num file: $!";
+  my ($latest) = (split ':', scalar <NUM>)[0];
+  close NUM;
+
+  for my $num ($indexed + 1 .. $latest) {
+    print "." if $TRACE and not $num % 100;
+    my $xover = get_article_xover_from_file($group, $num) or next;
+    my $ref = $xover->{'References'} || '';
+    my (@parents) = $ref =~ m/<(.+?)>/m;
+    $xover->{'In-Reply-To'} && $xover->{'In-Reply-To'} =~ m/<(.+?)>/ && push @parents, $1;
+
+    my $parent;
+    if ($parent = pop(@parents)) {
+      $parent = $dbh->selectrow_hashref("SELECT art,thread FROM header WHERE msgid = ?", undef, md5_hex($parent));
+    }
+
+    my $subj_hash = md5_hex(clean_subject($xover->{'Subject'} || ''));
+
+    # if no parent, but subject starts with 'Re:', try to find the parent/thread
+    if (!$parent && $xover->{'Subject'} && $xover->{'Subject'} =~ m/^(Re|An|Antwort|Aw)(\^\d+|\[\d+\]|\(\d+\))?:\s*/i) {
+      $parent = $dbh->selectrow_hashref("SELECT thread FROM header WHERE subjhash = ? AND received BETWEEN FROM_UNIXTIME(?) - INTERVAL 14 DAY AND FROM_UNIXTIME(?) ORDER BY received DESC LIMIT 1", undef, $subj_hash, $xover->{'mtime'}, $xover->{'mtime'});
+    }
+
+    my ($message_id) = md5_hex($xover->{'Message-ID'} =~ m/<(.+?)>/);
+    my ($from_hash) = md5_hex($xover->{'From'});
+
+    $ins_header->execute(
+      $grp,
+      $num,
+      $message_id,
+      $subj_hash,
+      $from_hash,
+      $parent->{'thread'} || $num,
+      $parent->{'art'} || 0,
+      $xover->{'mtime'},
+      $xover->{'Date'} || "",
+      $xover->{'Message-ID'} || "",
+      $xover->{'From'} || "",
+      $xover->{'Subject'} || "",
+      $xover->{'References'} || "",
+      $xover->{'Lines'} || 0,
+    ) or die "failed to insert into overview: $DBI::errstr";
+
+  }
+
+  print " done.\n" if $TRACE;
+}
+
+sub clean_subject {
+  my $subj = shift;
+  $subj =~ s/^(Re|An|Antwort|Aw)(\^\d+|\[\d+\]|\(\d+\))?:\s*//i;
+  $subj =~ s/\s//g;
+  return lc $subj;
+}
+
+sub open_article {
+  my ($group,$artno) = @_;
+  return unless exists $groups{$group};
+  my $fh = Symbol::gensym();
+  my $file = sprintf("%s/archive/%d/%02d", $groups{$group}->{path},
+                     int $artno / 100, $artno % 100);
+  open $fh, "<$file"
+    or return;
+  return $fh;
+}
+
+sub get_article_xover_from_file {
+  my ($group,$artno) = @_;
+  return unless exists $groups{$group};
+  my $article = open_article($group,$artno)
+    or return;
+  my (%xover);
+  $xover{'mtime'} = (stat $article)[9];
+  my $body  = 0;
+  my $lines = 0;
+  my $lastheader;
+LINE:
+  while (my $line = <$article>) {
+    $body = 1 unless $body or $line =~ /\S/;
+    last if $body and $xover{Lines};
+    $lines++ if $body;
+    unless ($body) {
+      if ($lastheader && ($line =~ m/^\s+(.+?)\r?\n/is)) {
+	($xover{$lastheader} .= $1) =~ s/\s/ /g;
+	next;
+      }
+      foreach my $header (keys %overview) {
+	if ($line =~ m/^$header: (.+?)\r?\n/is) {
+	  ($xover{$lastheader = $header} = $1) =~ s/\s/ /g;
+          next LINE;
+	}
+      }
+      undef $lastheader;
+    }
+  }
+
+  if (!$xover{'References'} && $xover{'In-Reply-To'}) {
+    ($xover{'References'}) = ($xover{'In-Reply-To'} =~ m/(<.+?>)/);
+  }
+
+  $xover{'Lines'} ||= $lines;
+
+  # make sure we have a message-id
+  $xover{'Message-ID'} ||= "<$group-$artno\@$config{servername}>";
+
+  # fix the From header
+  my ($from) = Mail::Address->parse($xover{'From'});
+  if ($from) {
+    $xover{From} = $from->address;
+    my $phrase = $from->phrase || $from->comment;
+    $xover{From} .= " (".$phrase.")" if $phrase;
+  }
+  else {
+    $xover{From} = "bogus\@$config{servername} (Unknown Sender)";
+  }
+  return \%xover;
+}

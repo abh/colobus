@@ -1,15 +1,18 @@
+* create a database and load the table definition in colobus.sql
 * copy ./config.example to ./config and edit as appropriate for your
   site
 * edit ./run and change the user and group ids used to something
   appropriate
 * edit ./log/run and make sure the logs go where you want
 * chmod +t `pwd`
-* run ./colobus -u to create the initial databases (may take a while)
+* run ./colobus-archive -a to create the initial databases (may take a while)
 * ln -s `pwd` /service/colobus
 * wait a minute for svscan to pick up the new service
 * test with a newsreader
-* run ./colobus -u regularly (like from cron) to keep the message-id
-  and overview databases up to date
+* run ./colobus-archive -a regularly (like from cron) to keep the 
+  overview database up to date. it can also be run from within the
+  editor file for your list (and you can restrict it to just updating
+  the overview for that group).
 
 (not using http://cr.yp.to/daemontools.html and
 http://cr.yp.to/ucspi-tcp.html? you're on your own.)

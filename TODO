@@ -1,1 +1,9 @@
 * implement option to skip sending banner and let tcpserver do it
+
+* take advantage of database for requests that return info about
+  multiple articles
+
+* clean up encoded subjects correctly (need to decode first)
+  -- can use Encode::MIME::Header, but it requires perl 5.7.3
+
+* tie STDOUT so we can track bytes output accurately

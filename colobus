@@ -1,5 +1,5 @@
 #!/usr/bin/perl -w
-# Copyright (c) 2001 Jim Winstead Jr. See the LICENSE file for details.
+# Copyright (c) 2001,2003 Jim Winstead Jr. See the LICENSE file for details.
 use strict;
 
 $| = 1;
@@ -9,18 +9,17 @@ $| = 1;
 # or inetd if you're into that sort of thing
 
 package Colobus;
-$Colobus::VERSION = "1.2";
+$Colobus::VERSION = "2.0";
 
-my $TRACE = -t || $ENV{TRACE};
+my $TRACE = $ENV{TRACE};
 
 my $REMOTE = $ENV{TCPREMOTEIP} || 'console';
 
 $0 = "colobus: $REMOTE";
 
 use POSIX ();
-use BerkeleyDB qw(DB_CREATE DB_LAST DB_RDONLY DB_INIT_CDB DB_INIT_MPOOL);
-use Storable ();
-use MLDBM qw(BerkeleyDB::Btree Storable);
+use DBI ();
+use Digest::MD5 qw(md5_hex);
 use Mail::Address ();
 use Time::Local ();
 use Symbol ();
@@ -38,7 +37,15 @@ my %config = (
   servername => 'news',
 );
 
-read_config("config");
+my $config = shift @ARGV || "config";
+
+read_config($config);
+
+my %groupsbyid;
+foreach (keys %groups) {
+  next unless $groups{$_}->{num};
+  $groupsbyid{$groups{$_}->{num}} = $_;
+}
 
 sub read_config {
   my $file = shift;
@@ -79,26 +86,12 @@ if ($config{disallow}) {
 }
 
 # these are the headers we track for the overview database
-my (@overview) = qw(Subject From Date Message-ID References Bytes
-                    Lines);
+my (@overview) = qw(Subject From Date Message-ID References Lines);
 my (%overview); @overview{@overview} = ('') x @overview;
 
-if (@ARGV && $ARGV[0] eq '-u') {
-  update_databases(); exit;
-}
-
-if (@ARGV && shift @ARGV eq '-r') {
-  update_databases(1, @ARGV); exit;
-}
-
-if (@ARGV && $ARGV[0] eq '-d') {
-  dump_databases(); exit;
-}
-
-my $dbenv = new BerkeleyDB::Env
-		-Flags => DB_INIT_CDB|DB_INIT_MPOOL,
-  or die "failed to open env: $! $BerkeleyDB::Error";
-my $msgids = open_msgids($dbenv,1);
+my $dsn = $config{'dsn'} || "DBI:mysql:database=colobus;host=localhost";
+my $dbh = DBI->connect($dsn, $config{'dbuser'}, $config{'dbpass'}, { PrintError => 1 })
+  or die($DBI::errstr);
 
 $SIG{ALRM} = sub { exit; };
 
@@ -229,19 +222,35 @@ sub open_article {
 sub get_article_xover {
   my ($group,$artno) = @_;
   return unless exists $groups{$group};
-  unless (exists $groups{$group}->{db}) {
-    my $db = open_group_xover($dbenv,$group,1);
-    $groups{$group}->{db} = $db;
-  }
-  my $xover = $groups{$group}->{db}->{$artno};
+
+  my $query = <<END;
+SELECT h_subject AS `Subject`, h_from AS `From`, h_date AS `Date`,
+       h_messageid AS `Message-ID`,
+       h_references AS `References`,
+       h_lines AS `Lines`,
+       msgid
+ FROM header
+ WHERE grp = ? AND art = ?
+ LIMIT 1
+END
+
+  my $xover = $dbh->selectrow_hashref($query, undef, $groups{$group}->{'num'}, $artno);
+
   $xover ||= get_article_xover_from_file($group,$artno);
+
   if ($xover) {
     my $msgid = get_article_message_id_from_xover($group,$artno,$xover);
-    if (exists $msgids->{$msgid}) {
-      $xover->{xref} = join " ", keys %{$msgids->{$msgid}};
-      ($xover->{newsgroups} = $xover->{xref}) =~ s/(:\d+)//g;
-      $xover->{newsgroups} =~ s/\s+/,/g;
-    }
+    # generate xref and newsgroups info
+    my $query = qq{SELECT grp,art FROM header WHERE msgid = ?};
+    my $res = $dbh->selectall_arrayref($query, undef, md5_hex($msgid));
+
+    $xover->{'xref'}
+      = join ' ', map { $groupsbyid{$_->[0]}.":".$_->[1] } @$res if $res;
+
+    $xover->{'xref'} ||= "$group:$artno";
+
+    ($xover->{newsgroups} = $xover->{xref}) =~ s/(:\d+)//g;
+    $xover->{newsgroups} =~ s/\s+/,/g;
   }
   return $xover;
 }
@@ -252,22 +261,31 @@ sub get_article_xover_from_file {
   my $article = open_article($group,$artno)
     or return;
   my (%xover);
+  $xover{'mtime'} = (stat $article)[9];
   my $body  = 0;
   my $lines = 0;
+  my $lastheader;
   while (my $line = <$article>) {
     $body = 1 unless $body or $line =~ /\S/;
     last if $body and $xover{Lines};
     $lines++ if $body;
     unless ($body) {
+      if ($lastheader && ($line =~ m/^\s+(.+?)\r?\n/is)) {
+	($xover{$lastheader} .= $1) =~ s/\s/ /g;
+	next;
+      }
       foreach my $header (keys %overview) {
 	if ($line =~ m/^$header: (.+?)\r?\n/is) {
-	  ($xover{$header} = $1) =~ s/\s/ /g;
-	}
-	if (!$xover{'References'} && $line =~ m/^In-Reply-To: (.+?)\r?\n/is) {
-	  ($xover{'References'}) = ($1 =~ m/(<.+?>)/);
+	  ($xover{$lastheader = $header} = $1) =~ s/\s/ /g;
+          next;
 	}
       }
+      undef $lastheader;
     }
+  }
+
+  if (!$xover{'References'} && $xover{'In-Reply-To'}) {
+    ($xover{'References'}) = ($xover{'In-Reply-To'} =~ m/(<.+?>)/);
   }
 
   $xover{'Lines'} ||= $lines;
@@ -279,11 +297,13 @@ sub get_article_xover_from_file {
   my ($from) = Mail::Address->parse($xover{From});
   if ($from) {
     $xover{From} = $from->address;
-    $xover{From} .= " (".$from->name.")" if $from->name;
+    my $phrase = $from->phrase || $from->comment;
+    $xover{From} .= " (".$phrase.")" if $phrase;
   }
   else {
     $xover{From} = "bogus\@$config{servername} (Unknown Sender)";
   }
+
   return \%xover;
 }
 
@@ -304,9 +324,14 @@ sub get_article_message_id_from_xover {
 
 sub get_group_and_article {
   my ($msgid) = @_;
-  if (my $articles = $msgids->{$msgid}) {
-    return split /:/, ((keys %$articles)[0]);
-  }
+
+  my $query = qq{SELECT grp,art FROM header WHERE msgid = ? LIMIT 1};
+
+  my $res = $dbh->selectrow_hashref($query, undef, md5_hex($msgid));
+
+  return $res ? ($groupsbyid{$res->{grp}}, $res->{art})
+              : ($msgid =~ m/^(.+?)-(\d+)\@$config{servername}$/);
+
   return ($msgid =~ m/^(.+?)-(\d+)\@$config{servername}$/);
 }
 
@@ -481,7 +506,7 @@ sub outgoing {
 	  unless $haveref || !$xover->{References};
 
 	if ($restrict == 1) {
-	  note("/$group/$which", "HEAD");
+	  note("/".($group||$ggg)."/$which", "HEAD");
 	  return dot();
 	}
       }
@@ -534,10 +559,14 @@ sub help {
   dot();
 }
 
+sub have_messageid {
+  return scalar $dbh->selectrow_array("SELECT grp,art FROM header WHERE msgid = ?", undef, md5_hex(shift));
+}
+
 sub ihave {
   my ($messageid) = ($_[0] =~ m/^<(.+?)>$/);
   return respond(437, "article rejected - do not try again")
-    if !$messageid || exists $msgids->{$messageid};
+    if !$messageid || have_messageid($messageid);
   respond(335,"send article to be transferred. end with <CR-LF>.<CR-LF>");
   incoming(1);
 }
@@ -580,6 +609,7 @@ sub list {
     respond(215, "list of newsgroups follows");
     for (sort keys %groups) {
       next if $match && !wildmat($match, $_);
+      next if !$match && $groups{$_}->{'hidden'};
       my $max = get_group_max($_);
       my $min = get_group_min($_);
       my $act = get_group_active($_);
@@ -592,6 +622,7 @@ sub list {
     respond(215, 'group creations in form "name time who".');
     for (sort keys %groups) {
       next if $match && !wildmat($match, $_);
+      next if $groups{$_}->{'hidden'};
       my $time = get_group_creation($_)
         or next;
       print "$_ $time news\r\n";
@@ -603,6 +634,7 @@ sub list {
     respond(215, "list of newsgroups follows");
     for (sort keys %groups) {
       next if $match && !wildmat($match, $_);
+      next if !$match && $groups{$_}->{'hidden'};
       my $desc = get_group_description($_)
         or next;
       print "$_ $desc\r\n";
@@ -735,7 +767,7 @@ sub slave {
 }
 
 sub stat {
-  outgoing(shift);
+  outgoing(shift, 0);
 }
 
 sub xgtitle {
@@ -870,98 +902,6 @@ sub xpath {
 
 sub xversion {
   respond(200, "Colobus $Colobus::VERSION");
-}
-
-=head1 DATABASE HANDLING
-
-=cut
-
-sub open_group_xover {
-  my ($env,$group,$ro) = @_;
-  my (%xover);
-  my $db = tie %xover, 'MLDBM', -Filename => "db/$group.db",
-           -Env => $env,
-           -Flags => $ro ? DB_RDONLY : DB_CREATE
-    or die "unable to open database for $group: $! $BerkeleyDB::Error";
-
-  $db->filter_fetch_key  ( sub { $_ = unpack("i", $_) } );
-  $db->filter_store_key  ( sub { $_ = pack ("i", $_) } ) ;
-
-  return \%xover;
-}
-
-sub open_msgids {
-  my ($env,$ro) = @_;
-  my (%msgid);
-  my $db = tie %msgid, 'MLDBM', -Filename => "db/messageid.db",
-           -Env => $env,
-           -Flags => ($ro ? DB_RDONLY : DB_CREATE)
-    or die "unable to open database: $! $BerkeleyDB::Error";
-
-  return \%msgid;
-}
-
-sub update_databases {
-  my ($env) = new BerkeleyDB::Env
-                  -Flags => DB_INIT_CDB|DB_INIT_MPOOL|DB_CREATE
-    or die "failed to create env: $! $BerkeleyDB::Error";
-
-  my ($msgids) = open_msgids($env);
-
-  my ($force, @groups) = @_;
-  if (!@groups) {
-    @groups = sort keys %groups;
-  }
-
-  foreach (@groups) {
-    print "updating $_ " if $TRACE;
-
-    my $db = open_group_xover($env,$_);
-
-    my $max = get_group_max($_);
-    next unless $max;
-
-    my ($last) = $max;
-    1 until ($db->{$last} || !(--$last));
-
-    $last = 0 if $force;
-
-    my $first = ($last > 0) ? ($last+1) : get_group_min($_);
-    if ($first > $max) {
-      print "caught up.\n" if $TRACE;
-      next;
-    }
-    print "$first-$max: " if $TRACE;
-
-    my $last_num_length = 0;
-    foreach my $artno ($first..$max) {
-      if ($force and !($artno % 50)) {
-	print "\b" x $last_num_length, $artno;
-	$last_num_length = length $artno;
-      }
-      my $xover = get_article_xover_from_file($_,$artno)
-        or next;
-      $db->{$artno} = $xover;
-      my $msgid = get_article_message_id_from_xover($_,$artno,$xover);
-      my $articles = ($msgids->{$msgid} ||= {});
-      $articles->{"$_:$artno"} = undef;
-      $msgids->{$msgid} = $articles;
-    }
-    print "\b" x $last_num_length, $max if $TRACE;
-    print " - done.\n" if $TRACE;
-  }
-}
-
-sub dump_databases {
-  my $env = new BerkeleyDB::Env(-Flags => DB_INIT_CDB|DB_INIT_MPOOL)
-    or die "failed to create env: $! $BerkeleyDB::Error";
-  my ($msgids) = open_msgids($env,1);
-  print Data::Dumper::Dumper($msgids);
-
-  foreach (sort keys %groups) {
-    my $db = open_group_xover($env,$_,1);
-    print Data::Dumper::Dumper($db);
-  }
 }
 
 1;

@@ -1,5 +1,5 @@
 # servername is used in some of the server's output
-servername => news.php.net
+servername => example.com
 
 # timeout is in seconds
 timeout => 300
@@ -7,9 +7,15 @@ timeout => 300
 # disallow specific nntp commands
 disallow => ihave,xindex
 
+# dsn for connecting to database
+dsn => DBI:mysql:database=colobus;host=localhost
+dbuser => colobus
+dbpass => colobus
+
 # newsgroups
 #
 # the fields used are:
+#  - num = the number of the newsgroup (must be unique)
 #  - path = path to ezmlm directory for the mailing list corresponding
 #    to this newsgroup (only num and archive/ need to be readable)
 #  - mail = mail address to send posts to (leave out to disallow posting)
@@ -18,148 +24,35 @@ disallow => ihave,xindex
 #  - moderated = moderated group (some newsreaders display this specially)
 #  - recommend = recommend this group to new subscribers (not many
 #    clients pay attention to this information)
+#  - hidden = don't show in listings
 
-group php.announce {
-  path => /home/ezmlm/php-announce
-  mail => php-announce@lists.php.net
-  desc => Announcements of new PHP releases
+group example.announce {
+  num => 1
+  path => /path/to/ezmlm/announce
+  mail => announce@example.com
+  desc => Announcements
   moderated
   recommend
 }
 
-group php.beta {
-  path => /home/ezmlm/php-beta
-  desc => Discussion about beta releases (no longer active, see php.qa)
+group example.general {
+  num => 2
+  path => /path/to/ezmlm/general
+  mail => general@example.com
+  desc => General discussion
 }
 
-group php.cvs {
-  path => /home/ezmlm/php-cvs
+group example.cvs {
+  num => 3
+  path => /path/to/ezmlm/cvs
   desc => Automated mailings from commits to the CVS repository
-  followup => php.dev
+  followup => example.general
 }
 
-group php.db {
-  path => /home/ezmlm/php-db
-  mail => php-db@lists.php.net
-  desc => Using databases with PHP
-}
-
-group php.dev {
-  path => /home/ezmlm/php-dev
-  mail => php-dev@lists.php.net
-  desc => Developing the PHP language and runtime
-}
-
-group php.doc {
-  path => /home/ezmlm/phpdoc
-  first => 969332401
-  mail => phpdoc@lists.php.net
-  desc => Writing and translating the PHP documentation
-}
-
-group php.general {
-  path => /home/ezmlm/php-general
-  mail => php-general@lists.php.net
-  desc => General discussions about PHP
-}
-
-group php.gtk {
-  path => /home/ezmlm/php-gtk
-  mail => php-gtk@lists.php.net
-  desc => Developing and using the PHP-GTK extension
-}
-
-group php.i18n {
-  path => /home/ezmlm/php-i18n
-  mail => php-i18n@lists.php.net
-  desc => Internationalization (i18n), localization (l10n), and PHP
-}
-
-group php.install {
-  path => /home/ezmlm/php-install
-  mail => php-install@lists.php.net
-  desc => Installing and configuring PHP
-}
-
-group php.kb {
-  path => /home/ezmlm/php-kb
-  desc => Regular updates from the PHP Knowledge Base (no longer active)
-}
-
-group php.lang {
-  path => /home/ezmlm/php-lang
-  mail => php-lang@lists.php.net
-  desc => Developing a specification of the PHP language
-}
-
-group php.migration {
-  path => /home/ezmlm/php-migration
-  desc => Migrating from PHP 3 to PHP 4 (no longer active)
-}
-
-group php.mirrors {
-  path => /home/ezmlm/php-mirrors
-  mail => php-mirrors@lists.php.net
-  desc => Maintaining the PHP websites and mirrors
-}
-
-group php.notes {
-  path => /home/ezmlm/php-notes
-  desc => Automated mailings from user annotations to the manual
-}
-
-group php.pear {
-  path => /home/ezmlm/php-pear
-  desc => Developing and using PEAR (no longer active, see php.pear.*)
-}
-
-group php.pear.cvs {
-  path => /home/ezmlm/pear-cvs
-  mail => pear-cvs@lists.php.net
-  desc => Automated mailings from commits to the PEAR CVS repository
-}
-
-group php.pear.dev {
-  path => /home/ezmlm/pear-dev
-  mail => pear-dev@lists.php.net
-  desc => Developing the PHP Extension and Application Repository
-}
-
-group php.pear.general {
-  path => /home/ezmlm/pear-general
-  mail => pear-general@lists.php.net
-  desc => Using the PHP Extension and Application Repository
-}
-
-group php.qa {
-  path => /home/ezmlm/php-qa
-  mail => php-qa@lists.php.net
-  desc => Assuring the quality of PHP releases
-}
-
-group php.template {
-  path => /home/ezmlm/php-template
-  desc => Developing a template system for PHP (no longer active)
-}
-
-group php.test {
-  path => /home/ezmlm/php-test
-  mail => php-test@lists.php.net
+group example.test {
+  num => 4
+  path => /path/to/ezmlm/test
+  mail => test@example.com
   desc => Used for testing the mailing lists and news server
-}
-
-group php.version3 {
-  path => /home/ezmlm/php3
-  desc => Discussion about PHP 3 (no longer active, see php.general)
-}
-
-group php.version4 {
-  path => /home/ezmlm/php4beta
-  desc => Discussion about PHP 4 (no longer active, see php.general)
-}
-
-group php.windows {
-  path => /home/ezmlm/php-windows
-  mail => php-windows@lists.php.net
-  desc => Using PHP on Windows operating systems
+  hidden
 }

@@ -5,9 +5,9 @@ basic installation instructions can be found in the INSTALL file.
 
 the license (mit-style) can be found in the LICENSE file.
 
-it uses the MLDBM, Storable, and BerkeleyDB perl modules to maintain
-the overview and message-id databases, so you'll need to install those
-if they aren't already installed.
+it uses the DBI perl module to maintain the overview database, so you'll need
+to install that and the relevant DBD driver (only MySQL has been tested) if
+they aren't already installed.
 
 it uses the Mail::Address perl module (from MailTools) to parse mail
 addresses and make them presentable to news clients (which have a
@@ -39,5 +39,5 @@ http://www.selu.com/bio/PrimateGallery/PrimateWeek/Colobus/.
 additionally, information about the red colobus can be found at
 http://www.bioko.org/primates/pennanti.asp.
 
-jim winstead <jimw@trainedmonkey.com>, july 2001
+jim winstead <jimw@trainedmonkey.com>, may 2004
 http://trainedmonkey.com/colobus/
