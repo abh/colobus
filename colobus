@@ -9,7 +9,7 @@ $| = 1;
 # or inetd if you're into that sort of thing
 
 package Colobus;
-$Colobus::VERSION = "2.0";
+$Colobus::VERSION = "2.1";
 
 my $TRACE = $ENV{TRACE};
 
@@ -93,6 +93,20 @@ my $dsn = $config{'dsn'} || "DBI:mysql:database=colobus;host=localhost";
 my $dbh = DBI->connect($dsn, $config{'dbuser'}, $config{'dbpass'}, { PrintError => 1 })
   or die($DBI::errstr);
 
+my $query = <<END;
+SELECT h_subject AS `Subject`, h_from AS `From`, h_date AS `Date`,
+       h_messageid AS `Message-ID`,
+       h_references AS `References`,
+       h_lines AS `Lines`,
+       msgid,
+       art
+ FROM header
+ WHERE grp = ? AND art >= ? AND art <= ?
+END
+
+my $xover_sth = $dbh->prepare($query)
+  or die($DBI::errstr);
+
 $SIG{ALRM} = sub { exit; };
 
 # output the greeting
@@ -170,24 +184,11 @@ sub get_group_description {
   return $groups{$group}->{desc};
 }
 
-sub get_group_min {
+sub get_group_minmax {
   my ($group) = lc shift;
-  return $groups{$group}->{first} || 1;
-}
-
-sub get_group_max {
-  my ($group) = lc shift
+  my $grp = $groups{$group}->{'num'}
     or return;
-  return unless exists $groups{$group};
-  my $num_file = $groups{$group}->{path}."/num";
-  if (open FILE, "<$num_file") {
-    my ($max) = (<FILE> =~ m/^(\d+)/);
-    close FILE;
-    return $max;
-  }
-  else {
-    warn "Could not open $num_file: $!\n";
-  }
+  return $dbh->selectrow_array("SELECT MIN(art),MAX(art) FROM header WHERE grp = ?", undef, $grp);
 }
 
 # we guess the group creation time from the modified time of the
@@ -196,7 +197,7 @@ sub get_group_creation {
   my ($group) = lc shift
     or return;
   return unless exists $groups{$group};
-  my $artno = get_group_min($group);
+  my ($artno) = get_group_minmax($group);
   my $file = sprintf("%s/archive/%d/%02d", $groups{$group}->{path},
                      int $artno / 100, $artno % 100);
   return (stat($file))[9];
@@ -220,26 +221,16 @@ sub open_article {
 }
 
 sub get_article_xover {
-  my ($group,$artno) = @_;
-  return unless exists $groups{$group};
+  my ($group,$begin,$end) = @_;
+  my $grp = $groups{$group}->{'num'}
+    or return;
 
-  my $query = <<END;
-SELECT h_subject AS `Subject`, h_from AS `From`, h_date AS `Date`,
-       h_messageid AS `Message-ID`,
-       h_references AS `References`,
-       h_lines AS `Lines`,
-       msgid
- FROM header
- WHERE grp = ? AND art = ?
- LIMIT 1
-END
+  $xover_sth->execute($grp, $begin, $end || $begin)
+    or return;
 
-  my $xover = $dbh->selectrow_hashref($query, undef, $groups{$group}->{'num'}, $artno);
-
-  $xover ||= get_article_xover_from_file($group,$artno);
-
-  if ($xover) {
-    my $msgid = get_article_message_id_from_xover($group,$artno,$xover);
+  my @xover;
+  while (my $xover = $xover_sth->fetchrow_hashref) {
+    my $msgid = get_article_message_id_from_xover($group,$xover);
     # generate xref and newsgroups info
     my $query = qq{SELECT grp,art FROM header WHERE msgid = ?};
     my $res = $dbh->selectall_arrayref($query, undef, md5_hex($msgid));
@@ -247,79 +238,30 @@ END
     $xover->{'xref'}
       = join ' ', map { $groupsbyid{$_->[0]}.":".$_->[1] } @$res if $res;
 
-    $xover->{'xref'} ||= "$group:$artno";
+    $xover->{'xref'} ||= $group . ":" . $xover->{'art'};
 
-    ($xover->{newsgroups} = $xover->{xref}) =~ s/(:\d+)//g;
-    $xover->{newsgroups} =~ s/\s+/,/g;
+    ($xover->{'newsgroups'} = $xover->{'xref'}) =~ s/(:\d+)//g;
+    $xover->{'newsgroups'} =~ s/\s+/,/g;
+
+    push @xover, $xover;
   }
-  return $xover;
-}
-
-sub get_article_xover_from_file {
-  my ($group,$artno) = @_;
-  return unless exists $groups{$group};
-  my $article = open_article($group,$artno)
-    or return;
-  my (%xover);
-  $xover{'mtime'} = (stat $article)[9];
-  my $body  = 0;
-  my $lines = 0;
-  my $lastheader;
-  while (my $line = <$article>) {
-    $body = 1 unless $body or $line =~ /\S/;
-    last if $body and $xover{Lines};
-    $lines++ if $body;
-    unless ($body) {
-      if ($lastheader && ($line =~ m/^\s+(.+?)\r?\n/is)) {
-	($xover{$lastheader} .= $1) =~ s/\s/ /g;
-	next;
-      }
-      foreach my $header (keys %overview) {
-	if ($line =~ m/^$header: (.+?)\r?\n/is) {
-	  ($xover{$lastheader = $header} = $1) =~ s/\s/ /g;
-          next;
-	}
-      }
-      undef $lastheader;
-    }
-  }
-
-  if (!$xover{'References'} && $xover{'In-Reply-To'}) {
-    ($xover{'References'}) = ($xover{'In-Reply-To'} =~ m/(<.+?>)/);
-  }
-
-  $xover{'Lines'} ||= $lines;
-
-  # make sure we have a message-id
-  $xover{'Message-ID'} ||= "<$group-$artno\@$config{servername}>";
-
-  # fix the From header
-  my ($from) = Mail::Address->parse($xover{From});
-  if ($from) {
-    $xover{From} = $from->address;
-    my $phrase = $from->phrase || $from->comment;
-    $xover{From} .= " (".$phrase.")" if $phrase;
-  }
-  else {
-    $xover{From} = "bogus\@$config{servername} (Unknown Sender)";
-  }
-
-  return \%xover;
+  return @xover;
 }
 
 sub get_article_message_id {
   my ($group,$artno) = @_;
   return unless exists $groups{$group};
-  return get_article_message_id_from_xover($group,$artno,
+  return get_article_message_id_from_xover($group,
                                            get_article_xover($group,$artno));
 }
 
 sub get_article_message_id_from_xover {
-  my ($group,$artno,$xover) = @_;
+  my ($group,$xover) = @_;
+
   if ($xover->{'Message-ID'} && $xover->{'Message-ID'} =~ m/<(.+?)>/) {
     return $1;
   }
-  return "$group-$artno\@$config{servername}";
+  return "$group-" . $xover->{'art'} . "\@$config{servername}";
 }
 
 sub get_group_and_article {
@@ -450,11 +392,11 @@ sub outgoing {
     return respond($ggg ? 430 : 423, "no such article found");
   }
 
-  my $xover = get_article_xover($ggg||$group, $which)
+  my ($xover) = get_article_xover($ggg||$group, $which)
     or return fault("failed to get xover data for $which <$id>");
 
   # figure out the message-id and newsgroups
-  $id ||= get_article_message_id_from_xover($group,$which,$xover);
+  $id ||= get_article_message_id_from_xover($group,$xover);
 
   if (!$restrict) {
     $current = $which unless $ggg;
@@ -577,13 +519,13 @@ sub group {
   return respond(411, "no such news group")
     if !exists($groups{$ggg});
 
-  my $max = get_group_max($ggg)
+  my ($min, $max) = get_group_minmax($ggg)
     or return fault("unable to get max for $ggg");
-  my $min = get_group_min($ggg);
+    
   my $count = $max - $min + 1;
 
   # select the new group, reset the current article number
-  $group = $ggg; $current = get_group_min($group);
+  $group = $ggg; $current = $min;
 
   respond(211, "$count $min $max $group");
 }
@@ -591,9 +533,9 @@ sub group {
 sub last {
   return respond(412, "no newsgroup selected") unless $group;
   return respond(420, "no current article has been selected") unless $current;
-  my $max = get_group_max($group);
+  my ($min, $max) = get_group_minmax($group);
   return respond(422, "no previous article in this group")
-    if $current == get_group_min($group);
+    if $current == $min;
 
   # look up the message-id for the previous article
   my $id = get_article_message_id($group,--$current);
@@ -610,8 +552,7 @@ sub list {
     for (sort keys %groups) {
       next if $match && !wildmat($match, $_);
       next if !$match && $groups{$_}->{'hidden'};
-      my $max = get_group_max($_);
-      my $min = get_group_min($_);
+      my ($min,$max) = get_group_minmax($_);
       my $act = get_group_active($_);
       printf "%s %010d %010d %s\r\n", $_, $max, $min, $act if $max && $act;
     }
@@ -679,8 +620,7 @@ sub listgroup {
   my $ggg = shift || $group;
   respond(412, "not currently in newsgroup")
     if !$ggg;
-  my $min = get_group_min($ggg);
-  my $max = get_group_max($ggg)
+  my ($min, $max) = get_group_minmax($ggg)
     or return fault("couldn't get information about group");
   $group = $ggg; $current = $min;
   respond(211, "list of article numbers to follow");
@@ -707,7 +647,7 @@ sub mode {
 sub next {
   return respond(412, "no newsgroup selected") unless $group;
   return respond(420, "no current article has been selected") unless $current;
-  my $max = get_group_max($group);
+  my ($min, $max) = get_group_minmax($group);
   return respond(421, "no next article in this group")
     if $current == $max;
 
@@ -736,8 +676,7 @@ sub newgroups {
   for (sort keys %groups) {
     my $created = get_group_creation($_);
     next unless $created && $created > $since;
-    my $max = get_group_max($_);
-    my $min = get_group_min($_);
+    my ($min, $max) = get_group_minmax($_);
     my $act = get_group_active($_);
     printf "%s %010d %010d %s\r\n", $_, $max, $min, $act if $max && $act;
   }
@@ -818,8 +757,7 @@ sub xhdr {
     return dot();
   }
 
-  my $min = get_group_min($group);
-  my $max = get_group_max($group);
+  my ($min,$max) = get_group_minmax($group);
 
   $begin = $min if ($begin && $begin < $min);
   $begin ||= $current;
@@ -831,10 +769,9 @@ sub xhdr {
   }
 
   respond($code, "$header follows for $begin to $end");
-  ARTICLE: for ($begin..$end) {
-    alarm $config{timeout};
-    my $xover = get_article_xover($group,$_)
-      or next;
+  alarm $config{timeout};
+  my (@xover) = get_article_xover($group, $begin, $end);
+  foreach my $xover (@xover) {
     foreach (@pats) {
       next ARTICLE unless wildmat($_,$xover->{$header});
     }
@@ -852,8 +789,7 @@ sub xover {
     if !$group;
   return respond(501,"most specify beginning of range")
     if defined $end && !$begin;
-  my $min = get_group_min($group);
-  my $max = get_group_max($group);
+  my ($min,$max) = get_group_minmax($group);
 
   $begin = $min if ($begin && $begin < $min);
   $begin ||= $current;
@@ -865,11 +801,10 @@ sub xover {
   }
 
   respond(224, "overview information follows for $begin to $end");
-  for ($begin..$end) {
-    alarm $config{timeout};
-    my $xover = get_article_xover($group,$_)
-      or next;
-    print $_;
+  alarm $config{timeout};
+  my (@xover) = get_article_xover($group, $begin, $end);
+  foreach my $xover (@xover) {
+    print $xover->{'art'};
     foreach my $header (@overview) {
       print "\t", ($xover->{$header} || "");
     }
