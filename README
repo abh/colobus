@@ -18,7 +18,11 @@ result for 'newnews' commands). it also ignores the 'distributions'
 parameters on the 'newnews' and 'newgroups' commands.
 
 it implements the extended 'list', 'mode reader', 'mode stream',
-'xgtitle', 'xhdr', 'xpat', 'xover', and 'xrover' commands from rfc 2980.
+'xgtitle', 'xhdr', 'xpat', 'xpath', 'xover', and 'xrover' commands
+from rfc 2980.
+
+it implements a completely non-standard 'xversion' command to get the
+version of the news server.
 
 (the relevant rfc documents have been included in the distribution,
 by the way.)

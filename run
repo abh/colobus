@@ -1,2 +1,2 @@
 #!/bin/sh
-exec tcpserver -vHR -u 65534 -g 65534 0 119 ./colobus 2>&1
+exec tcpserver -HR -u 65534 -g 65534 0 119 ./colobus 2>&1

@@ -35,6 +35,7 @@ group php.beta {
 group php.cvs {
   path => /home/ezmlm/php-cvs
   desc => Automated mailings from commits to the CVS repository
+  followup => php.dev
 }
 
 group php.db {

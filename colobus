@@ -13,6 +13,8 @@ $Colobus::VERSION = "1.0";
 
 my $TRACE = $ENV{TRACE};
 
+my $REMOTE = $ENV{TCPREMOTEIP} || 'console';
+
 use POSIX ();
 use BerkeleyDB qw(DB_CREATE DB_LAST DB_RDONLY DB_INIT_CDB DB_INIT_MPOOL);
 use Storable ();
@@ -66,7 +68,7 @@ sub read_config {
 # these are the commands we understand, so far
 my (@commands) = qw(article body date group head help ihave last list
                     listgroup mode next newgroups newnews post quit slave
-                    stat xgtitle xhdr xover xpat xrover);
+                    stat xgtitle xhdr xover xpat xpath xrover xversion);
 my (%commands); @commands{@commands} = ('') x @commands;
 if ($config{disallow}) {
   foreach (map { s/^\s*(.+?)\s*$/$1/; $_; } split /,/, $config{disallow}) {
@@ -102,7 +104,6 @@ $SIG{ALRM} = sub { exit; };
 # XXX provide an option so one could have tcpserver send the banner
 respond(200, "$config{servername} - colobus $Colobus::VERSION ready - (posting ok).");
 
-my ($commands) = '';
 alarm $config{timeout};
 while (<STDIN>) {
   $_ =~ s/\r?\n$//s; # advanced chomp
@@ -125,10 +126,14 @@ sub dispatch {
   return;
 }
 
+my $curpos = 0;
+
 sub respond {
   my ($code, $message) = @_;
   warn "$code $message\n" if $TRACE;
-  print "$code $message\r\n";
+  my $s = print "$code $message\r\n";
+  $curpos = tell STDOUT;
+  return $s;
 }
 
 sub dot () {
@@ -139,6 +144,20 @@ sub dot () {
 sub fault {
   my ($msg) = shift || "program fault - command not performed";
   return respond(503, $msg);
+}
+
+sub note {
+  my ($path,$method,$code,$bytes) = @_;
+  return unless $path;
+  $method ||= 'GET';
+  $code ||= 200;
+  $bytes ||= 0;
+  if ((my $pos = tell STDOUT) > 0) {
+    $bytes ||= $pos - $curpos;
+  }
+  print STDERR "$REMOTE - - ",
+	       POSIX::strftime("[%d/%b/%Y:%H:%M:%S %z]", localtime),
+	       " \"$method $path HTTP/1.0\" $code $bytes\n";
 }
 
 sub get_group_active {
@@ -201,7 +220,7 @@ sub open_article {
   my $file = sprintf("%s/archive/%d/%02d", $groups{$group}->{path},
                      int $artno / 100, $artno % 100);
   open $fh, "<$file"
-    or (warn("unable to open '$file': $!"), return);
+    or return;
   return $fh;
 }
 
@@ -303,6 +322,7 @@ sub incoming {
   my ($ihave) = shift;
   my ($newsgroups,$from,$to,$headers);
   $headers = '';
+  my $bytes = 0;
 
   # scoop up the headers
   alarm $config{timeout};
@@ -317,6 +337,7 @@ sub incoming {
       and ($from) = (Mail::Address->parse($1))[0]->address;
     next if (!$to && (($to) = /^To: (.+?)\s*$/s));
     next if /^Newsgroups:/;
+    $bytes += length;
     $headers .= $_;
     alarm $config{timeout};
   }
@@ -325,6 +346,8 @@ sub incoming {
     unless $newsgroups;
   return respond($ihave ? 437 : 441,"posting failed - no from specified")
     unless $from;
+  return respond($ihave ? 437 : 441,"posting failed - invalid from")
+    unless $from =~ m/^.+?@[-.\w]+$/;
 
   my (@mailto);
 
@@ -351,6 +374,7 @@ sub incoming {
     s/\r\n$/\n/s;
     last if /^\.\n$/s;
     s/^\.//g;
+    $bytes += length;
     print FILE;
     alarm $config{timeout};
   }
@@ -358,6 +382,10 @@ sub incoming {
 
   close FILE
     or return respond($ihave ? 436 : 441, "posting failed -- qmail barfed!");
+
+  foreach (@newsgroups) {
+    note("/$_/new", "PUT", 200, $bytes);
+  }
 
   respond($ihave ? 235 : 240,"article posted ok");
 }
@@ -371,8 +399,11 @@ sub outgoing {
   # handle specification by message-id
   if ($which && $which =~ m/^<(.+?)>$/) {
     $id = $1;
-    ($ggg,$which) = get_group_and_article($id)
-      or return respond(430, "no such article found");
+    ($ggg,$which) = get_group_and_article($id);
+    unless ($ggg) {
+      note("/msgid/$id", $restrict == 1 ? "HEAD" : "GET", 404);
+      return respond(430, "no such article found");
+    }
   }
 
   return respond(412,"no newsgroup has been selected")
@@ -380,8 +411,11 @@ sub outgoing {
   return respond(420,"no current article has been selected")
     unless $which;
 
-  my $article = open_article($ggg || $group,$which)
-    or return respond($ggg ? 430 : 423, "no such article found");
+  my $article = open_article($ggg || $group,$which);
+  unless ($article) {
+    note("/".($ggg||$group)."/$which", $restrict == 1 ? "HEAD" : "GET", 404);
+    return respond($ggg ? 430 : 423, "no such article found");
+  }
 
   my $xover = get_article_xover($ggg||$group, $which)
     or return fault("failed to get xover data for $which <$id>");
@@ -409,6 +443,8 @@ sub outgoing {
     print "Path: $config{servername}\r\n";
     print "Xref: $config{servername} ", $xover->{xref}, "\r\n"
       if $xover->{xref};
+    print "Followup-To: ", $groups{$ggg||$group}{followup}, "\r\n"
+      if $groups{$ggg||$group}{followup};
   }
 
   my ($pasthead,$havedate,$havemsgid,$havesubj,$haveref);
@@ -434,12 +470,16 @@ sub outgoing {
         print "Subject: \r\n" unless $havesubj;
         print "References: ", $xover->{References}, "\r\n"
 	  unless $haveref || !$xover->{References};
-        return dot() if $restrict == 1;
+	if ($restrict == 1) {
+	  note("/$group/$which", "HEAD");
+	  return dot();
+	}
       }
       next if $restrict == 2;
     }
     print;
   }
+  note("/$group/$which", "GET");
   dot();
 }
 
@@ -467,6 +507,7 @@ sub help {
   respond(100, "help text follows");
   print "  ", join "\r\n  ", sort keys %commands;
   print "\r\n";
+  note("/help");
   dot();
 }
 
@@ -521,6 +562,7 @@ sub list {
       my $act = get_group_active($_);
       printf "%s %010d %010d %s\r\n", $_, $max, $min, $act if $max && $act;
     }
+    note("/list/active");
     return dot();
   }
   elsif ($list eq 'active.times') {
@@ -531,6 +573,7 @@ sub list {
         or next;
       print "$_ $time news\r\n";
     }
+    note("/active.times");
     return dot();
   }
   elsif ($list eq 'newsgroups') {
@@ -541,6 +584,7 @@ sub list {
         or next;
       print "$_ $desc\r\n";
     }
+    note("/list/newsgroups");
     return dot();
   }
 
@@ -550,15 +594,18 @@ sub list {
       print "$_:\r\n";
     }
     print "Xref:full\r\n";
+    note("/list/overview.fmt");
     return dot();
   }
 
   elsif ($list eq 'distributions') {
     respond(215, "list of distributions follows");
+    note("/list/distributions");
     return dot();
   }
   elsif ($list eq 'distrib.pats') {
     respond(215, "list of distrib.pats follows");
+    note("/list/distrib.pats");
     return dot();
   }
   elsif ($list eq 'subscriptions') {
@@ -566,9 +613,11 @@ sub list {
     for (sort keys %groups) {
       print "$_\r\n" if get_group_recommend($_);
     }
+    note("/list/subscriptions");
     return dot();
   }
   respond(501, "list type not understood");
+  note("/list/$list","GET",404);
 }
 
 sub listgroup {
@@ -585,6 +634,7 @@ sub listgroup {
     print "$i\r\n";
     alarm $config{timeout};
   }
+  note("/$ggg");
   dot();
 }
 
@@ -615,7 +665,7 @@ sub next {
 sub newgroups {
   my ($date,$time,$gmt) = @_;
   return fault("invalid date or time format")
-    unless $date && $time && (!$gmt || $gmt == 'GMT' || $gmt == 'UTC');
+    unless $date && $time && (!$gmt || $gmt eq 'GMT' || $gmt eq 'UTC');
 
   my ($since);
   my ($y,$m,$d,$h,$i,$s) = (unpack("a2a2a2", $date), unpack("a2a2a2",$time));
@@ -636,11 +686,13 @@ sub newgroups {
     my $act = get_group_active($_);
     printf "%s %010d %010d %s\r\n", $_, $max, $min, $act if $max && $act;
   }
+  note("/newgroups");
   dot();
 }
 
 sub newnews {
   respond(230, "list of new articles by message-id follows");
+  note("/newnews");
   dot();
 }
 
@@ -673,6 +725,7 @@ sub xgtitle {
       or next;
     print "$_ $desc\r\n";
   }
+  note("/newsgroups".($match && "?q=$match"));
   dot();
 }
 
@@ -684,8 +737,10 @@ sub xhdr {
 
   if ($range && $range =~ /^<(.+)>$/) {
     ($ggg,$begin) = get_group_and_article($1);
-    return respond(530,"no such article")
-      if !$ggg || !$begin;
+    if (!$ggg || !$begin) {
+      note("/msgid/$1","HEAD",404);
+      return respond(530,"no such article")
+    }
   }
   else {
     return respond(412,"no news group currently selected")
@@ -703,6 +758,7 @@ sub xhdr {
 
   # short-circuit for headers not in overview database
   unless (exists $overview{$header}) {
+    note("/$group?h=$header","GET",404);
     respond($code, "$header not in overview database, returning empty list");
     return dot();
   }
@@ -714,8 +770,10 @@ sub xhdr {
   $begin ||= $current;
   $end ||= defined $end ? $max : $begin;
 
-  return respond(420,"no article(s) selected")
-    if ($begin > $max) || ($end && ($begin > $end)) || !($begin || $current);
+  if (($begin > $max) || ($end && ($begin > $end)) || !($begin || $current)) {
+    note("/$group?h=$header&b=$begin&e=$end","GET",204);
+    return respond(420,"no article(s) selected");
+  }
 
   respond($code, "$header follows for $begin to $end");
   ARTICLE: for ($begin..$end) {
@@ -728,6 +786,8 @@ sub xhdr {
     next unless $xover->{$header};
     print "$_ ", $xover->{$header}, "\r\n";
   }
+  #XXX include @pats in log
+  note("/$group?h=$header&b=$begin&e=$end");
   dot();
 }
 
@@ -744,8 +804,10 @@ sub xover {
   $begin ||= $current;
   $end ||= defined $end ? $max : $begin;
 
-  return respond(420,"no article(s) selected")
-    if ($begin > $max) || ($end && ($begin > $end)) || !($begin || $current);
+  if (($begin > $max) || ($end && ($begin > $end)) || !($begin || $current)) {
+    note("/$group?b=$begin&e=$end","GET",204);
+    return respond(420,"no article(s) selected");
+  }
 
   respond(224, "overview information follows for $begin to $end");
   for ($begin..$end) {
@@ -759,6 +821,7 @@ sub xover {
     print "\tXref: ", ($xover->{xref} || "");
     print "\r\n";
   }
+  note("/$group?b=$begin&e=$end");
   dot();
 }
 
@@ -768,6 +831,22 @@ sub xpat {
 
 sub xrover {
   xhdr("References",shift,224,@_);
+}
+
+sub xpath {
+  my $id = shift;
+  if ($id && $id =~ m/^<(.+?)>$/) {
+    my ($ggg,$begin) = get_group_and_article($1);
+    respond(223, "$ggg/$begin");
+  }
+  else {
+    respond(501, "invalid msgid");
+  }
+
+}
+
+sub xversion {
+  respond(200, "Colobus $Colobus::VERSION");
 }
 
 =head1 DATABASE HANDLING
@@ -817,6 +896,8 @@ sub update_databases {
     my $db = open_group_xover($env,$_);
 
     my $max = get_group_max($_);
+    next unless $max;
+
     my ($last) = $max;
     1 until ($db->{$last} || !(--$last));
 

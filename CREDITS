@@ -6,8 +6,8 @@
   leafnode
 * thanks to ask (ask@perl.org) for various cleanups, the initial
   patch to use Mail::Address to clean up From: headers, the addition
-  of 'include' to the config language, and the patch to make the
-  update status pretty
+  of 'include' to the config language, the patch to make the
+  update status pretty, and XPATH and XVERSION support
 * thanks to russ allbery for pointing out a bug in the response to the
   'help' command
 * thanks to simon fraser (via chris nandor) for pointing out a bug in

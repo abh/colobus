@@ -1,0 +1,26 @@
+#!/usr/bin/perl -w
+# Copyright (c) 2001 Jim Winstead Jr. See the LICENSE file for details.
+use strict;
+
+use Net::NNTP ();
+
+$SIG{ALRM} = sub {
+  die "timed out\n";
+};
+
+alarm 10;
+
+my $nntp = new Net::NNTP "localhost"
+  or die("couldn't connect");
+
+my $groups = $nntp->list()
+  or die("couldn't get list of groups");
+
+foreach my $group (keys %$groups) {
+  my ($total,$first,$last,$name) = $nntp->group($group)
+    or die("couldn't enter group $group");
+  my $head = $nntp->head($last)
+    or die("couldn't get head of $group/$last");
+}
+
+$nntp->quit;
