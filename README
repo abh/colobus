@@ -9,6 +9,10 @@ it uses the MLDBM, Storable, and BerkeleyDB perl modules to maintain
 the overview and message-id databases, so you'll need to install those
 if they aren't already installed.
 
+it uses the Mail::Address perl module (from MailTools) to parse mail
+addresses and make them presentable to news clients (which have a
+stricter requirement for the format of the From: header).
+
 it implements all of rfc 977 (although it will refuse all 'ihave'
 commands, and always returns an empty result for 'newnews' commands).
 it also ignores the 'distributions' parameters on the 'newnews' and

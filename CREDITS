@@ -1,2 +1,4 @@
 * thanks to aint (from #php on irc.php.net) for helping to debug a
   problem with outlook express
+* thanks to ask (ask@perl.org) for various cleanups and the initial
+  patch to use Mail::Address to clean up From: headers

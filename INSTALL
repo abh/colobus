@@ -2,6 +2,7 @@
 * edit ./run and change the user and group ids used to something
   appropriate
 * edit ./log/run and make sure the logs go where you want
+* chmod +t `pwd`
 * run ./colobus -u to create the initial databases (may take a while)
 * ln -s `pwd` /service/colobus
 * wait a minute for svscan to pick up the new service

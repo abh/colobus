@@ -8,8 +8,8 @@ $| = 1;
 # (http://cr.yp.to/ucspi-tcp.html)
 # or inetd if you're into that sort of thing
 
-package colobus;
-$colobus::VERSION = "0.6";
+package Colobus;
+$Colobus::VERSION = "0.7";
 
 my $TRACE = 0;
 
@@ -17,6 +17,7 @@ use POSIX ();
 use BerkeleyDB qw(DB_CREATE DB_LAST DB_RDONLY DB_INIT_CDB DB_INIT_MPOOL);
 use Storable ();
 use MLDBM qw(BerkeleyDB::Btree Storable);
+use Mail::Address ();
 
 use Data::Dumper ();
 
@@ -182,6 +183,10 @@ if (@ARGV && $ARGV[0] eq '-u') {
   update_databases(); exit;
 }
 
+if (@ARGV && shift @ARGV eq '-r') {
+  update_databases(1, @ARGV); exit;
+}
+
 if (@ARGV && $ARGV[0] eq '-d') {
   dump_databases(); exit;
 }
@@ -195,7 +200,7 @@ $SIG{ALRM} = sub { exit; };
 
 # output the greeting
 # XXX provide an option so one could have tcpserver send the banner
-respond(200, "colobus $colobus::VERSION ready - (posting ok).");
+respond(200, "colobus $Colobus::VERSION ready - (posting ok).");
 
 my ($rin,$rout) = ('','');
 my ($win,$wout) = ('','');
@@ -265,11 +270,15 @@ sub get_group_max {
     or return;
   return unless exists $groups{$group};
   local *FILE;
-  open FILE, "<".$groups{$group}->{path}."/num"
-    or next;
-  my ($max) = (<FILE> =~ m/^(\d+)/);
-  close FILE;
-  return $max;
+  my $num_file = $groups{$group}->{path}."/num";
+  if (open FILE, "<$num_file") {
+    my ($max) = (<FILE> =~ m/^(\d+)/);
+    close FILE;
+    return $max;
+  }
+  else {
+    warn "Could not open $num_file: $!\n";
+  }
 }
 
 # we guess the group creation time from the modified time of the
@@ -278,7 +287,10 @@ sub get_group_creation {
   my ($group) = lc shift
     or return;
   return unless exists $groups{$group};
-  return (stat($groups{$group}->{path}."/archive/0/01"))[9];
+  my $artno = get_group_min($group);
+  my $file = sprintf("%s/archive/%d/%02d", $groups{$group}->{path},
+                     int $artno / 100, $artno % 100);
+  return (stat($file))[9];
 }
 
 use Symbol ();
@@ -322,13 +334,25 @@ sub get_article_xover_from_file {
   while (my $line = <$article>) {
     last unless $line =~ /\S/;
     foreach my $header (keys %overview) {
-      if ($line =~ m/^$header: (.+?)\r?\n/s) {
+      if ($line =~ m/^$header: (.+?)\r?\n/is) {
         ($xover{$header} = $1) =~ s/\s/ /g;
       }
-      if (!$xover{'References'} && $line =~ m/^In-Reply-To: (.+?)\r?\n/s) {
-        ($xover{'References'} = $1) =~ s/\s/ /g;
+      if (!$xover{'References'} && $line =~ m/^In-Reply-To: (.+?)\r?\n/is) {
+        ($xover{'References'}) = ($1 =~ m/(<.+?>)/);
       }
     }
+  }
+  # make sure we have a message-id
+  $xover{'Message-ID'} ||= "<$group-$artno\@$servername>";
+
+  # fix the From header
+  my ($from) = Mail::Address->parse($xover{From});
+  if ($from) {
+    $xover{From} = $from->address;
+    $xover{From} .= " (".$from->name.")" if $from->name;
+  }
+  else {
+    $xover{From} = "bogus\@$servername (Unknown Sender)";
   }
   return \%xover;
 }
@@ -423,19 +447,20 @@ sub article_type {
       if $xover->{xref};
   }
 
-  my ($pasthead,$havedate,$havemsgid,$havefrom,$havesubj,$haveref);
+  my ($pasthead,$havedate,$havemsgid,$havesubj,$haveref);
   while (<$article>) {
     alarm $timeout;
     s/^\.(\r?\n)/..$1/s; # fix lines with a single dot
     s/(?<!\r)\n\z/\r\n/s; # fix lines to end with \r\n
     unless ($pasthead) {
+      next if /^From:/; # skip the from header, we add our own
       $havedate ||= m/^Date:/;
-      $havemsgid ||= m/^Message-ID:/;
-      $havefrom ||= m/^From:/;
+      $havemsgid ||= m/^Message-ID:/i;
       $havesubj ||= m/^Subject:/;
-      $havesubj ||= m/^References:/;
+      $haveref ||= m/^References:/;
       if ($pasthead = m/^\r?\n$/s) {
         next if $restrict == 2;
+        print "From: ", $xover->{From}, "\r\n";
         print "Date: ",
               POSIX::strftime("%a, %d %B %Y %H:%M:%S %z",
                               localtime((stat($article))[9])),
@@ -443,8 +468,7 @@ sub article_type {
           unless $havedate;
         print "Message-ID: <$id>\r\n" unless $havemsgid;
         print "Subject: \r\n" unless $havesubj;
-        print "From: unknown\r\n" unless $havefrom;
-	print "References: ", $xover->{References}, "\r\n"
+        print "References: ", $xover->{References}, "\r\n"
 	  unless $haveref || !$xover->{References};
         return dot() if $restrict == 1;
       }
@@ -634,7 +658,9 @@ sub post {
     s/\r\n$/\n/s;
     next if /^Path:/;
     ($newsgroups) = /^Newsgroups: (.+)/ unless $newsgroups;
-    ($from) = /^From: .*?(\S+\@\S+).*/ unless $from;
+    !$from 
+      and /^From: (.*)/
+      and ($from) = (Mail::Address->parse($1))[0]->address;
     next if (!$to && (($to) = /^To: (.+?)\s*$/s));
     next if /^Newsgroups:/;
     $headers .= $_;
@@ -776,8 +802,13 @@ sub update_databases {
 
   my ($msgids) = open_msgids($env);
 
-  foreach (sort keys %groups) {
-    print "updating $_..." if $TRACE;
+  my ($force, @groups) = @_;
+  if (!@groups) {
+    @groups = sort keys %groups;
+  }
+
+  foreach (@groups) {
+    print "updating $_..." if $force || $TRACE;
 
     my $db = open_group_xover($env,$_);
 
@@ -785,15 +816,17 @@ sub update_databases {
     my ($last) = $max;
     1 until ($db->{$last} || !(--$last));
 
+    $last = 0 if $force;
+
     my $first = ($last > 0) ? ($last+1) : get_group_min($_);
     if ($first > $max) {
-      print "caught up.\n" if $TRACE;
+      print "caught up.\n" if $force || $TRACE;
       next;
     }
-    print "$first-$max..." if $TRACE;
+    print "$first-$max..." if $force || $TRACE;
 
     foreach my $artno ($first..$max) {
-      #print ".";
+      print "." if $force || $TRACE;
       my $xover = get_article_xover_from_file($_,$artno)
         or next;
       $db->{$artno} = $xover;
@@ -802,7 +835,7 @@ sub update_databases {
       $articles->{"$_:$artno"} = undef;
       $msgids->{$msgid} = $articles;
     }
-    print "done.\n" if $TRACE;
+    print "done.\n" if $force || $TRACE;
   }
 }
 
