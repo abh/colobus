@@ -1,0 +1,42 @@
+#!/usr/bin/perl -w
+# Copyright (c) 2002 Jim Winstead Jr. See the LICENSE file for details.
+use strict;
+use File::Path qw(mkpath);
+use Date::Parse qw(str2time);
+
+my $dir = shift
+  or die "usage: $0 directory < mbox\n";
+
+die "usage: $0 directory < mbox\n" if -t;
+
+die "$0: $dir is not a directory\n" unless -d $dir;
+
+my $count = 0;
+my $size = 0;
+my $date = 0;
+my $file;
+
+while (<>) {
+  if (/^From .+?@.+? (.+)/) {
+    close OUT if $file;
+    utime time, $date, $file if $file;
+    $count++;
+    my $path = sprintf("%s/archive/%d", $dir, int($count/100));
+    mkpath($path);
+    $file = "$path/".sprintf("%02d",$count%100);
+    $date = str2time($1) || time;
+    open OUT, ">$file"
+      or die "couldn't open $file for writing: $!\n";
+    chmod 0744, $file;
+    next;
+  }
+  print OUT $_ if $file;
+  $size += length $_;
+}
+close OUT;
+
+$size = int($size / 256);
+
+open NUM, ">$dir/num";
+print NUM "$count:$size\n";
+close NUM;
