@@ -1,0 +1,821 @@
+#!/usr/bin/perl -w
+# Copyright (c) 2001 Jim Winstead Jr. See the LICENSE file for details.
+use strict;
+
+$| = 1;
+
+# this is designed to be run under tcpserver
+# (http://cr.yp.to/ucspi-tcp.html)
+# or inetd if you're into that sort of thing
+
+package colobus;
+$colobus::VERSION = "0.6";
+
+my $TRACE = 0;
+
+use POSIX ();
+use BerkeleyDB qw(DB_CREATE DB_LAST DB_RDONLY DB_INIT_CDB DB_INIT_MPOOL);
+use Storable ();
+use MLDBM qw(BerkeleyDB::Btree Storable);
+
+use Data::Dumper ();
+
+## config
+
+# the servername is used in some headers and to generate message-ids
+my ($servername) = "news.php.net";
+
+# we use alarm to set a rough timeout. we reset the timer whenever we
+# send data in a particularly output-intensive area, or receive data
+# from the client
+my ($timeout) = 300;
+
+# setting this to qw(/usr/sbin/sendmail) should work, but DO NOT ADD -t!
+my (@mailinject) = qw(/var/qmail/bin/qmail-inject -a);
+
+# %groups is a has of group names and the info about the group (in a
+# hash reference). the fields used are:
+#  - path = path to ezmlm directory for the mailing list corresponding
+#    to this newsgroup (only num and archive/ need to be readable)
+#  - mail = mail address to send posts to (leave out to disallow posting)
+#  - desc = description to show for this newsgroup
+#  - first = first post in group (in case your archive doesn't start at 1)
+#  - moderated = moderated group (some newsreaders display this specially)
+
+my (%groups) = (
+  'php.announce' => {
+    path => '/home/ezmlm/php-announce',
+    mail => 'php-announce@lists.php.net',
+    desc => "Announcements of new PHP releases",
+    moderated => 1,
+  },
+  'php.beta' => {
+    path => '/home/ezmlm/php-beta',
+    desc => "Discussion about beta releases (no longer active, see php.qa)",
+  },
+  'php.cvs' => {
+    path => '/home/ezmlm/php-cvs',
+    desc => "Automated mailings from commits to the CVS repository",
+  },
+  'php.db' => {
+    path => '/home/ezmlm/php-db',
+    mail => 'php-db@lists.php.net',
+    desc => "Using databases with PHP",
+  },
+  'php.dev' => {
+    path => '/home/ezmlm/php-dev',
+    mail => 'php-dev@lists.php.net',
+    desc => "Developing the PHP language and runtime",
+  },
+  'php.doc' => {
+    first => 969332401,
+    path => '/home/ezmlm/phpdoc',
+    mail => 'phpdoc@lists.php.net',
+    desc => "Writing and translating the PHP documentation",
+  },
+  'php.general' => {
+    path => '/home/ezmlm/php-general',
+    mail => 'php-general@lists.php.net',
+    desc => "General discussions about PHP",
+  },
+  'php.gtk' => {
+    path => '/home/ezmlm/php-gtk',
+    mail => 'php-gtk@lists.php.net',
+    desc => "Developing and using the PHP-GTK extension",
+  },
+  'php.i18n' => {
+    path => '/home/ezmlm/php-i18n',
+    mail => 'php-i18n@lists.php.net',
+    desc => "Internationalization (i18n), localization (l10n), and PHP",
+  },
+  'php.install' => {
+    path => '/home/ezmlm/php-install',
+    mail => 'php-install@lists.php.net',
+    desc => "Installing and configuring PHP",
+  },
+  'php.kb' => {
+    path => '/home/ezmlm/php-kb',
+    desc => "Regular updates from the PHP Knowledge Base (no longer active)",
+  },
+  'php.lang' => {
+    path => '/home/ezmlm/php-lang',
+    mail => 'php-lang@lists.php.net',
+    desc => "Developing a specification of the PHP language",
+  },
+  'php.migration' => {
+    path => '/home/ezmlm/php-migration',
+    desc => "Migrating from PHP 3 to PHP 4 (no longer active)",
+  },
+  'php.mirrors' => {
+    path => '/home/ezmlm/php-mirrors',
+    mail => 'php-mirrors@lists.php.net',
+    desc => "Maintaining the PHP websites and mirrors",
+  },
+  'php.notes' => {
+    path => '/home/ezmlm/php-notes',
+    desc => "Automated mailings from user annotations to the manual",
+  },
+  'php.pear' => {
+    path => '/home/ezmlm/php-pear',
+    desc => "Developing and using PEAR (no longer active, see php.pear.*)",
+  },
+  'php.pear.cvs' => {
+    path => '/home/ezmlm/pear-cvs',
+    mail => 'pear-cvs@lists.php.net',
+    desc => "Automated mailings from commits to the PEAR CVS repository",
+  },
+  'php.pear.dev' => {
+    path => '/home/ezmlm/pear-dev',
+    mail => 'pear-dev@lists.php.net',
+    desc => "Developing the PHP Extension and Application Repository",
+  },
+  'php.pear.general' => {
+    path => '/home/ezmlm/pear-general',
+    mail => 'pear-general@lists.php.net',
+    desc => "Using the PHP Extension and Application Repository",
+  },
+  'php.qa' => {
+    path => '/home/ezmlm/php-qa',
+    mail => 'php-qa@lists.php.net',
+    desc => "Assuring the quality of PHP releases",
+  },
+  'php.template' => {
+    path => '/home/ezmlm/php-template',
+    desc => "Developing a template system for PHP (no longer active)",
+  },
+  'php.test' => {
+    path => '/home/ezmlm/php-test',
+    mail => 'php-test@lists.php.net',
+    desc => "Used for testing the mailing lists and news server",
+  },
+  'php.version3' => {
+    path => '/home/ezmlm/php3',
+    desc => "Discussion about PHP 3 (no longer active, see php.general)",
+  },
+  'php.version4' => {
+    path => '/home/ezmlm/php4beta',
+    desc => "Discussion about PHP 4 (no longer active, see php.general)",
+  },
+  'php.windows' => {
+    path => '/home/ezmlm/php-windows',
+    mail => 'php-windows@lists.php.net',
+    desc => "Using PHP on Windows operating systems",
+  },
+);
+
+## end config
+
+# these are the commands we understand, so far
+my (@commands) = qw(article body date group head help ihave last list
+                    listgroup mode next newgroups newnews post quit slave
+                    stat xgtitle xover);
+my (%commands); @commands{@commands} = ('') x @commands;
+
+# these are the headers we track for the overview database
+my (@overview) = qw(Subject From Date Message-ID References Bytes
+                    Lines);
+my (%overview); @overview{@overview} = ('') x @overview;
+
+my ($group,$current); # the current group and article number (state!)
+
+if (@ARGV && $ARGV[0] eq '-u') {
+  update_databases(); exit;
+}
+
+if (@ARGV && $ARGV[0] eq '-d') {
+  dump_databases(); exit;
+}
+
+my $dbenv = new BerkeleyDB::Env
+		-Flags => DB_INIT_CDB|DB_INIT_MPOOL,
+  or die "failed to open env: $!";
+my $msgids = open_msgids($dbenv,1);
+
+$SIG{ALRM} = sub { exit; };
+
+# output the greeting
+# XXX provide an option so one could have tcpserver send the banner
+respond(200, "colobus $colobus::VERSION ready - (posting ok).");
+
+my ($rin,$rout) = ('','');
+my ($win,$wout) = ('','');
+vec($rin,fileno(STDIN),1) = 1;
+vec($win,fileno(STDOUT),1) = 1;
+
+my ($commands) = '';
+alarm $timeout;
+while (<STDIN>) {
+  $_ =~ s/\r?\n$//s; # advanced chomp
+  warn "dispatching $_\n" if $TRACE;
+  defined dispatch(split / +/, $_)
+    or respond(500, "command '$_' not recognized");
+  alarm $timeout;
+}
+
+sub dispatch ($@) {
+  my ($cmd) = lc shift;
+
+  if (exists $commands{$cmd}) {
+    my ($result) = eval "&$cmd";
+    warn $@ if $@;
+    return $result if defined $result;
+    return fault("command '$cmd' failed unexpectedly");
+  }
+
+  return;
+}
+
+sub respond ($$) {
+  my ($code, $message) = @_;
+  warn "$code $message\n" if $TRACE;
+  print "$code $message\r\n";
+}
+sub dot () {
+  warn ".\n" if $TRACE;
+  print ".\r\n";
+}
+
+sub fault {
+  my ($msg) = shift || "program fault - command not performed";
+  return respond(503, $msg);
+}
+
+sub get_group_active {
+  my ($group) = lc shift
+    or return;
+  return 'n' unless exists $groups{$group} && $groups{$group}->{mail};
+  return 'm' if $groups{$group}->{moderated};
+  return 'y';
+}
+
+sub get_group_description {
+  my ($group) = lc shift
+    or return;
+  return unless exists $groups{$group} && $groups{$group}->{desc};
+  return $groups{$group}->{desc};
+}
+
+sub get_group_min {
+  my ($group) = lc shift;
+  return $groups{$group}->{first} || 1;
+}
+
+sub get_group_max {
+  my ($group) = lc shift
+    or return;
+  return unless exists $groups{$group};
+  local *FILE;
+  open FILE, "<".$groups{$group}->{path}."/num"
+    or next;
+  my ($max) = (<FILE> =~ m/^(\d+)/);
+  close FILE;
+  return $max;
+}
+
+# we guess the group creation time from the modified time of the
+# first message in the archive. should be close enough.
+sub get_group_creation {
+  my ($group) = lc shift
+    or return;
+  return unless exists $groups{$group};
+  return (stat($groups{$group}->{path}."/archive/0/01"))[9];
+}
+
+use Symbol ();
+sub open_article {
+  my ($group,$artno) = @_;
+  return unless exists $groups{$group};
+  my $fh = Symbol::gensym();
+  my $file = sprintf("%s/archive/%d/%02d", $groups{$group}->{path},
+                     int $artno / 100, $artno % 100);
+  open $fh, "<$file"
+    or (warn("unable to open '$file': $!"), return);
+  return $fh;
+}
+
+sub get_article_xover {
+  my ($group,$artno) = @_;
+  return unless exists $groups{$group};
+  unless (exists $groups{$group}->{db}) {
+    my $db = open_group_xover($dbenv,$group,1);
+    $groups{$group}->{db} = $db;
+  }
+  my $xover = $groups{$group}->{db}->{$artno};
+  $xover ||= get_article_xover_from_file($group,$artno);
+  if ($xover) {
+    my $msgid = get_article_message_id_from_xover($group,$artno,$xover);
+    if (exists $msgids->{$msgid}) {
+      $xover->{xref} = join " ", keys %{$msgids->{$msgid}};
+      ($xover->{newsgroups} = $xover->{xref}) =~ s/(:\d+)//g;
+      $xover->{newsgroups} =~ s/\s+/,/g;
+    }
+  }
+  return $xover;
+}
+
+sub get_article_xover_from_file {
+  my ($group,$artno) = @_;
+  return unless exists $groups{$group};
+  my $article = open_article($group,$artno)
+    or return;
+  my (%xover);
+  while (my $line = <$article>) {
+    last unless $line =~ /\S/;
+    foreach my $header (keys %overview) {
+      if ($line =~ m/^$header: (.+?)\r?\n/s) {
+        ($xover{$header} = $1) =~ s/\s/ /g;
+      }
+      if (!$xover{'References'} && $line =~ m/^In-Reply-To: (.+?)\r?\n/s) {
+        ($xover{'References'} = $1) =~ s/\s/ /g;
+      }
+    }
+  }
+  return \%xover;
+}
+
+sub get_article_message_id {
+  my ($group,$artno) = @_;
+  return unless exists $groups{$group};
+  return get_article_message_id_from_xover($group,$artno,
+                                           get_article_xover($group,$artno));
+}
+
+sub get_article_message_id_from_xover {
+  my ($group,$artno,$xover) = @_;
+  if ($xover->{'Message-ID'} && $xover->{'Message-ID'} =~ m/<(.+?)>/) {
+    return $1;
+  }
+  return "$group-$artno\@$servername";
+}
+
+sub get_group_and_article {
+  my ($msgid) = @_;
+  if (my $articles = $msgids->{$msgid}) {
+    return split /:/, ((keys %$articles)[0]);
+  }
+  return ($msgid =~ m/^(.+?)-(\d+)\@$servername$/);
+}
+
+# this is a rather approximate conversion of 'wildmat' to perl.
+sub wildmat ($$) {
+  my ($expr, $string) = @_;
+  $expr =~ s/(?<!\\)\./\\./g;
+  $expr =~ s/(?<!\\)\$/\\\$/g;
+  $expr =~ s/(?<!\\)\?/./g;
+  $expr =~ s/(?<!\\)\*/.*/g;
+  return $string =~ /^$expr$/;
+}
+
+=head1 COMMAND HANDLERS
+
+=cut
+
+sub article {
+  return article_type(shift, 3);
+}
+
+sub article_type {
+  my ($which,$restrict) = @_; # restrict: 0=stat, 1=header, 2=body, 3=all
+  my ($id, $ggg); # message-id, group derived from message-id
+
+  $which ||= $current; # use the current article if none was specified
+
+  # handle specification by message-id
+  if ($which && $which =~ m/^<(.+?)>$/) {
+    $id = $1;
+    ($ggg,$which) = get_group_and_article($id)
+      or return respond(430, "no such article found");
+  }
+
+  return respond(412,"no newsgroup has been selected")
+    unless $ggg || $group;
+  return respond(420,"no current article has been selected")
+    unless $which;
+
+  my $article = open_article($ggg || $group,$which)
+    or return respond($ggg ? 430 : 423, "no such article found");
+
+  my $xover = get_article_xover($ggg||$group, $which)
+    or return fault("failed to get xover data for $which <$id>");
+
+  # figure out the message-id and newsgroups
+  $id ||= get_article_message_id_from_xover($group,$which,$xover);
+
+  if (!$restrict) {
+    $current = $which unless $ggg;
+    return respond(223, "$which <$id> article retrieved - request text separately");
+  }
+  elsif ($restrict == 1) {
+    respond(221, "$which <$id> article retrieved - head follows");
+  }
+  elsif ($restrict == 2) {
+    respond(222, "$which <$id> article retrieved - body follows");
+  }
+  elsif ($restrict == 3) {
+    respond(220, "$which <$id> article retrieved - head and body follows");
+  }
+
+  # add some synthetic headers
+  unless ($restrict == 2) {
+    print "Newsgroups: ", $xover->{newsgroups} || $group, "\r\n";
+    print "Path: $servername\r\n";
+    print "Xref: $servername ", $xover->{xref}, "\r\n"
+      if $xover->{xref};
+  }
+
+  my ($pasthead,$havedate,$havemsgid,$havefrom,$havesubj,$haveref);
+  while (<$article>) {
+    alarm $timeout;
+    s/^\.(\r?\n)/..$1/s; # fix lines with a single dot
+    s/(?<!\r)\n\z/\r\n/s; # fix lines to end with \r\n
+    unless ($pasthead) {
+      $havedate ||= m/^Date:/;
+      $havemsgid ||= m/^Message-ID:/;
+      $havefrom ||= m/^From:/;
+      $havesubj ||= m/^Subject:/;
+      $havesubj ||= m/^References:/;
+      if ($pasthead = m/^\r?\n$/s) {
+        next if $restrict == 2;
+        print "Date: ",
+              POSIX::strftime("%a, %d %B %Y %H:%M:%S %z",
+                              localtime((stat($article))[9])),
+              "\r\n"
+          unless $havedate;
+        print "Message-ID: <$id>\r\n" unless $havemsgid;
+        print "Subject: \r\n" unless $havesubj;
+        print "From: unknown\r\n" unless $havefrom;
+	print "References: ", $xover->{References}, "\r\n"
+	  unless $haveref || !$xover->{References};
+        return dot() if $restrict == 1;
+      }
+      next if $restrict == 2;
+    }
+    print;
+  }
+  dot();
+}
+
+sub body {
+  return article_type(shift,2);
+}
+
+sub date {
+  respond(111, POSIX::strftime("%Y%m%d%H%M%S", gmtime));
+}
+
+sub head {
+  return article_type(shift,1);
+}
+
+sub help {
+  respond(100, "help text follows");
+  print "  ", join "\r\n  ", sort keys %commands;
+  dot();
+}
+
+sub ihave {
+  respond(437, "article rejected - do not try again");
+}
+
+sub group {
+  my ($ggg) = lc shift
+    or return respond(501, "no group specified");
+  return respond(411, "no such news group")
+    if !exists($groups{$ggg});
+
+  my $max = get_group_max($ggg)
+    or return fault("unable to get max for $ggg");
+  my $min = get_group_min($ggg);
+  my $count = $max - $min + 1;
+
+  # select the new group, reset the current article number
+  $group = $ggg; $current = get_group_min($group);
+
+  respond(211, "$count $min $max $group");
+}
+
+sub last {
+  return respond(412, "no newsgroup selected") unless $group;
+  return respond(420, "no current article has been selected") unless $current;
+  my $max = get_group_max($group);
+  return respond(422, "no previous article in this group")
+    if $current == get_group_min($group);
+
+  # look up the message-id for the previous article
+  my $id = get_article_message_id($group,--$current);
+
+  respond(223, "$current <$id> article retrieved - request text separately");
+}
+
+sub list {
+  my ($list) = lc shift || "active";
+  my ($match) = shift;
+
+  if ($list eq 'active') {
+    respond(215, "list of newsgroups follows");
+    for (sort keys %groups) {
+      next if $match && !wildmat($match, $_);
+      my $max = get_group_max($_);
+      my $min = get_group_min($_);
+      my $act = get_group_active($_);
+      printf "%s %010d %010d %s\r\n", $_, $max, $min, $act if $max && $act;
+    }
+    return dot();
+  }
+  elsif ($list eq 'active.times') {
+    respond(215, 'group creations in form "name time who".');
+    for (sort keys %groups) {
+      next if $match && !wildmat($match, $_);
+      my $time = get_group_creation($_)
+        or next;
+      print "$_ $time news\r\n";
+    }
+    return dot();
+  }
+  elsif ($list eq 'newsgroups') {
+    respond(215, "list of newsgroups follows");
+    for (sort keys %groups) {
+      next if $match && !wildmat($match, $_);
+      my $desc = get_group_description($_)
+        or next;
+      print "$_ $desc\r\n";
+    }
+    return dot();
+  }
+
+  elsif ($list eq 'overview.fmt') {
+    respond(215, "order of fields in overview database");
+    foreach (@overview) {
+      print "$_\r\n";
+    }
+    print "Xref:full\r\n";
+    return dot();
+  }
+
+  elsif ($list eq 'distributions') {
+    respond(215, "list of distributions follows");
+    return dot();
+  }
+  elsif ($list eq 'distrib.pats') {
+    respond(215, "list of distrib.pats follows");
+    return dot();
+  }
+  elsif ($list eq 'subscriptions') {
+    respond(215, "list of suggested subscriptions follows");
+    print "php.announce\r\n";
+    return dot();
+  }
+  respond(501, "list type not understood");
+}
+
+sub listgroup {
+  my $ggg = shift || $group;
+  respond(412, "not currently in newsgroup")
+    if !$ggg;
+  my $min = get_group_min($ggg);
+  my $max = get_group_max($ggg)
+    or return fault("couldn't get information about group");
+  $group = $ggg; $current = $min;
+  respond(211, "list of article numbers to follow");
+  alarm $timeout;
+  for (my $i = $min; $i <= $max; $i++) {
+    print "$i\r\n";
+    alarm $timeout;
+  }
+  dot();
+}
+
+sub mode {
+  my $mode = lc shift;
+  if ($mode eq 'reader') {
+    return respond(200,"hello, you can post");
+  }
+  if ($mode eq 'stream') { # shouldn't be necessary, so we don't support it
+    return respond(200,"sure, why not?");
+  }
+  respond(501, "mode not understood");
+}
+
+sub next {
+  return respond(412, "no newsgroup selected") unless $group;
+  return respond(420, "no current article has been selected") unless $current;
+  my $max = get_group_max($group);
+  return respond(421, "no next article in this group")
+    if $current == $max;
+
+  # look up the message-id for the next article
+  my $id = get_article_message_id($group,++$current);
+
+  respond(223, "$current <$id> article retrieved - request text separately");
+}
+
+sub newgroups {
+  my ($date,$time,$gmt) = @_;
+  respond(231, "list of new newsgroups follows");
+  # XXX: list new newsgroups
+  dot();
+}
+
+sub newnews {
+  respond(230, "list of new articles by message-id follows");
+  dot();
+}
+
+sub post {
+  respond(340,"send article to be posted. end with <cr-lf>.<cr-lf>");
+  my ($newsgroups,$from,$to,$headers);
+  $headers = '';
+
+  # scoop up the headers
+  alarm $timeout;
+  while (<STDIN>) {
+    last if /^(\.)?\r?\n$/s;
+    s/^\.//g;
+    s/\r\n$/\n/s;
+    next if /^Path:/;
+    ($newsgroups) = /^Newsgroups: (.+)/ unless $newsgroups;
+    ($from) = /^From: .*?(\S+\@\S+).*/ unless $from;
+    next if (!$to && (($to) = /^To: (.+?)\s*$/s));
+    next if /^Newsgroups:/;
+    $headers .= $_;
+    alarm $timeout;
+  }
+
+  return respond(441,"posting failed - no newsgroups specified")
+    unless $newsgroups;
+  return respond(441,"posting failed - no from specified")
+    unless $from;
+
+  my (@mailto);
+
+  $newsgroups =~ s/\s//g;
+  my (@newsgroups) = split /,/, lc $newsgroups;
+  foreach (@newsgroups) {
+    return respond(441, "posting failed - newsgroup $_ unknown")
+      unless exists $groups{$_};
+    push @mailto, $groups{$_}->{mail};
+  }
+
+  local *FILE;
+  open(FILE, "|-")
+    || exec @mailinject, "-f$from", @mailto;
+#Received: from unknown (HELO intranet.sbs.srv.br) (200.207.122.67)
+#  by toye.p.sourceforge.net with SMTP; 8 Dec 2000 16:10:58 -0000
+  # this header can be used to track evildoers
+  print FILE "To: ", join(',', grep defined, (@mailto, $to)), "\n";
+  print FILE $headers;
+  print FILE "X-Posted-By: $ENV{TCPREMOTEIP}\n";
+  print FILE "\n";
+
+  alarm $timeout;
+  while (<STDIN>) {
+    s/\r\n$/\n/s;
+    last if /^\.\n$/s;
+    s/^\.//g;
+    print FILE;
+    alarm $timeout;
+  }
+  alarm 0;
+
+  close FILE
+    or return respond(441, "posting failed -- qmail barfed!");
+
+  respond(240,"article posted ok");
+}
+
+sub quit {
+  respond(205, "closing connection - goodbye!");
+  exit;
+}
+
+sub slave {
+  respond(202, "slave status noted");
+  # yeah, not really. nobody cares.
+}
+
+sub stat {
+  return article_type(shift);
+}
+
+sub xgtitle {
+  my $match = shift;
+
+  respond(282, "list of newsgroups follows");
+  for (sort keys %groups) {
+    next if $match && !wildmat($match, $_);
+    my $desc = get_group_description($_)
+      or next;
+    print "$_ $desc\r\n";
+  }
+  dot();
+}
+
+sub xover {
+  my ($begin,$end) = split /-/, (shift||"");
+  return respond(412,"no news group currently selected")
+    if !$group;
+  return respond(501,"most specify beginning of range")
+    if defined $end && !$begin;
+  my $min = get_group_min($group);
+  my $max = get_group_max($group);
+
+  $begin = $min if ($begin && $begin < $min);
+  $begin ||= $current;
+
+  return respond(420,"no article(s) selected")
+    if ($begin > $max) || ($end && ($begin > $end)) || !($begin || $current);
+
+  respond(224, "overview information follows for $begin to $end");
+  for ($begin..($end||$begin)) {
+    alarm $timeout;
+    my $xover = get_article_xover($group,$_)
+      or next;
+    print $_;
+    foreach my $header (@overview) {
+      print "\t", ($xover->{$header} || "");
+    }
+    print "\tXref: ", ($xover->{xref} || "");
+    print "\r\n";
+  }
+  dot();
+}
+
+=head1 DATABASE HANDLING
+
+=cut
+
+sub open_group_xover {
+  my ($env,$group,$ro) = @_;
+  my (%xover);
+  my $db = tie %xover, 'MLDBM', -Filename => "db/$group.db",
+           -Env => $env,
+           -Flags => $ro ? DB_RDONLY : DB_CREATE
+    or die "unable to open database for $group: $!";
+
+  $db->filter_fetch_key  ( sub { $_ = unpack("i", $_) } );
+  $db->filter_store_key  ( sub { $_ = pack ("i", $_) } ) ;
+
+  return \%xover;
+}
+
+sub open_msgids {
+  my ($env,$ro) = @_;
+  my (%msgid);
+  my $db = tie %msgid, 'MLDBM', -Filename => "db/messageid.db",
+           -Env => $env,
+           -Flags => ($ro ? DB_RDONLY : DB_CREATE)
+    or die "unable to open database: $!";
+
+  return \%msgid;
+}
+
+sub update_databases {
+  my ($env) = new BerkeleyDB::Env
+                  -Flags => DB_INIT_CDB|DB_INIT_MPOOL|DB_CREATE
+    or die "failed to create env: $!";
+
+  my ($msgids) = open_msgids($env);
+
+  foreach (sort keys %groups) {
+    print "updating $_..." if $TRACE;
+
+    my $db = open_group_xover($env,$_);
+
+    my $max = get_group_max($_);
+    my ($last) = $max;
+    1 until ($db->{$last} || !(--$last));
+
+    my $first = ($last > 0) ? ($last+1) : get_group_min($_);
+    if ($first > $max) {
+      print "caught up.\n" if $TRACE;
+      next;
+    }
+    print "$first-$max..." if $TRACE;
+
+    foreach my $artno ($first..$max) {
+      #print ".";
+      my $xover = get_article_xover_from_file($_,$artno)
+        or next;
+      $db->{$artno} = $xover;
+      my $msgid = get_article_message_id_from_xover($_,$artno,$xover);
+      my $articles = ($msgids->{$msgid} ||= {});
+      $articles->{"$_:$artno"} = undef;
+      $msgids->{$msgid} = $articles;
+    }
+    print "done.\n" if $TRACE;
+  }
+}
+
+sub dump_databases {
+  my $env = new BerkeleyDB::Env(-Flags => DB_INIT_CDB|DB_INIT_MPOOL)
+    or die "failed to create env: $!";
+  my ($msgids) = open_msgids($env,1);
+  print Data::Dumper::Dumper($msgids);
+
+  foreach (sort keys %groups) {
+    my $db = open_group_xover($env,$_,1);
+    print Data::Dumper::Dumper($db);
+  }
+}
+
+1;

@@ -1,0 +1,7 @@
+* implement option to skip sending banner and let tcpserver do it
+* possibly rewrite some headers to make them more rfc-compliant
+  (apparently netscape 4.x is fairly strict.)
+* NEWGROUPS YYMMDD HHMMSS [GMT|UTC]
+* XHDR header [range|<message-id>]
+* XPAT header range|<message-id> pat [pat ...]
+* XROVER [range] => XHDR references [range]

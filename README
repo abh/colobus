@@ -1,0 +1,36 @@
+colobus is an nntp server, written in perl, that provides access to
+mail archives in the ezmlm archive format.
+
+basic installation instructions can be found in the INSTALL file.
+
+the license (mit-style) can be found in the LICENSE file.
+
+it uses the MLDBM, Storable, and BerkeleyDB perl modules to maintain
+the overview and message-id databases, so you'll need to install those
+if they aren't already installed.
+
+it implements all of rfc 977 (although it will refuse all 'ihave'
+commands, and always returns an empty result for 'newnews' commands).
+it also ignores the 'distributions' parameters on the 'newnews' and
+'newgroups' commands.
+
+it implements the extended 'list' , 'mode reader', 'mode stream',
+'xgtitle', and 'xover' commands from rfc 2980.
+
+(the relevant rfc documents have been included in the distribution,
+by the way.)
+
+it supports posting by forwarding the post as an email to the list
+addresses, with the envelope sender sent to the from address of the
+news posting. it handles cross-posting by posting to each list
+seperately. it adds an 'Received:' header that includes the ip address
+of the poster, to help track evil-doers.
+
+information about the black-and-white colobus can be found at 
+http://www.selu.com/bio/PrimateGallery/PrimateWeek/Colobus/.
+
+additionally, information about the red colobus can be found at
+http://www.bioko.org/primates/pennanti.asp.
+
+jim winstead <jimw@trainedmonkey.com>, july 2001
+http://trainedmonkey.com/colobus/
