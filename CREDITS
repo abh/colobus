@@ -10,3 +10,5 @@
   update status pretty
 * thanks to russ allbery for pointing out a bug in the response to the
   'help' command
+* thanks to simon fraser (via chris nandor) for pointing out a bug in
+  the response to the 'list overview.fmt' command

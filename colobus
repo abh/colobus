@@ -9,7 +9,7 @@ $| = 1;
 # or inetd if you're into that sort of thing
 
 package Colobus;
-$Colobus::VERSION = "0.8";
+$Colobus::VERSION = "1.0";
 
 my $TRACE = $ENV{TRACE};
 
@@ -231,17 +231,26 @@ sub get_article_xover_from_file {
   my $article = open_article($group,$artno)
     or return;
   my (%xover);
+  my $body  = 0;
+  my $lines = 0;
   while (my $line = <$article>) {
-    last unless $line =~ /\S/;
-    foreach my $header (keys %overview) {
-      if ($line =~ m/^$header: (.+?)\r?\n/is) {
-        ($xover{$header} = $1) =~ s/\s/ /g;
-      }
-      if (!$xover{'References'} && $line =~ m/^In-Reply-To: (.+?)\r?\n/is) {
-        ($xover{'References'}) = ($1 =~ m/(<.+?>)/);
+    $body = 1 unless $body or $line =~ /\S/;
+    last if $body and $xover{Lines};
+    $lines++ if $body;
+    unless ($body) {
+      foreach my $header (keys %overview) {
+	if ($line =~ m/^$header: (.+?)\r?\n/is) {
+	  ($xover{$header} = $1) =~ s/\s/ /g;
+	}
+	if (!$xover{'References'} && $line =~ m/^In-Reply-To: (.+?)\r?\n/is) {
+	  ($xover{'References'}) = ($1 =~ m/(<.+?>)/);
+	}
       }
     }
   }
+
+  $xover{'Lines'} ||= $lines;
+
   # make sure we have a message-id
   $xover{'Message-ID'} ||= "<$group-$artno\@$config{servername}>";
 
@@ -405,7 +414,7 @@ sub outgoing {
   my ($pasthead,$havedate,$havemsgid,$havesubj,$haveref);
   while (<$article>) {
     alarm $config{timeout};
-    s/^\.(\r?\n)/..$1/s; # fix lines with a single dot
+    s/^\./../s; # fix lines with a leading dot
     s/(?<!\r)\n\z/\r\n/s; # fix lines to end with \r\n
     unless ($pasthead) {
       next if /^From:/; # skip the from header, we add our own
@@ -538,7 +547,7 @@ sub list {
   elsif ($list eq 'overview.fmt') {
     respond(215, "order of fields in overview database");
     foreach (@overview) {
-      print "$_\r\n";
+      print "$_:\r\n";
     }
     print "Xref:full\r\n";
     return dot();
@@ -685,6 +694,17 @@ sub xhdr {
       if !$range && !$current;
     $range && (($begin,$end) = split /-/, $range);
     $begin ||= $current;
+  }
+
+  # force the header into the case we use in the overview database
+  foreach (keys %overview) {
+    $header =~ s/^$_$/$_/i;
+  }
+
+  # short-circuit for headers not in overview database
+  unless (exists $overview{$header}) {
+    respond($code, "$header not in overview database, returning empty list");
+    return dot();
   }
 
   my $min = get_group_min($group);
