@@ -1,3 +1,3 @@
 #!/bin/sh
-exec softlimit -m 30000000 \
+exec softlimit -m 20000000 \
      tcpserver -X -x rules.cdb -c 60 -vhR -u 515 -g 514 0 119 /pkg/bin/perl ./colobus 2>&1

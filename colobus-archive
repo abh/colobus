@@ -91,13 +91,13 @@ if (grep { !$groups{$_}->{num} } keys %groups) {
 }
 
 my $ins_header = $dbh->prepare(<<QUERY);
-INSERT INTO header SET 
-  grp = ?,
-  art = ?,
+INSERT INTO articles SET 
+  group_id = ?,
+  id = ?,
   msgid = ?,
   subjhash = ?,
   fromhash = ?,
-  thread = ?,
+  thread_id = ?,
   parent = ?,
   received = FROM_UNIXTIME(?),
   h_date = ?,
@@ -114,7 +114,7 @@ for $group (@ARGV) {
 
   print "$group: " if $TRACE;
 
-  my ($indexed) = $dbh->selectrow_array("SELECT MAX(art) FROM header WHERE grp = ?", undef, $grp) || 0;
+  my ($indexed) = $dbh->selectrow_array("SELECT MAX(id) FROM articles WHERE group_id = ?", undef, $grp) || 0;
 
   open NUM, '<', $groups{$group}->{'path'}."/num"
     or die "unable to open num file: $!";
@@ -129,15 +129,21 @@ for $group (@ARGV) {
     $xover->{'In-Reply-To'} && $xover->{'In-Reply-To'} =~ m/<(.+?)>/ && push @parents, $1;
 
     my $parent;
-    if ($parent = pop(@parents)) {
-      $parent = $dbh->selectrow_hashref("SELECT art,thread FROM header WHERE msgid = ?", undef, md5_hex($parent));
+    while (my $parent_msg = pop(@parents)) {
+      $parent = $dbh->selectrow_hashref("SELECT id,thread_id FROM articles WHERE msgid = ?", undef, md5_hex($parent_msg));
+      last if $parent;
     }
 
     my $subj_hash = md5_hex(clean_subject($xover->{'Subject'} || ''));
 
     # if no parent, but subject starts with 'Re:', try to find the parent/thread
     if (!$parent && $xover->{'Subject'} && $xover->{'Subject'} =~ m/^(Re|An|Antwort|Aw)(\^\d+|\[\d+\]|\(\d+\))?:\s*/i) {
-      $parent = $dbh->selectrow_hashref("SELECT thread FROM header WHERE subjhash = ? AND received BETWEEN FROM_UNIXTIME(?) - INTERVAL 14 DAY AND FROM_UNIXTIME(?) ORDER BY received DESC LIMIT 1", undef, $subj_hash, $xover->{'mtime'}, $xover->{'mtime'});
+      $parent = $dbh->selectrow_hashref("SELECT thread_id FROM articles WHERE subjhash = ? AND received BETWEEN FROM_UNIXTIME(?) - INTERVAL 14 DAY AND FROM_UNIXTIME(?) ORDER BY received DESC LIMIT 1", undef, $subj_hash, $xover->{'mtime'}, $xover->{'mtime'});
+    }
+
+    # if no parent, try grouping the message with other very recent messages with the same subject
+    if (!$parent && $xover->{'Subject'}) {
+      $parent = $dbh->selectrow_hashref("SELECT thread_id FROM articles WHERE subjhash = ? AND received BETWEEN FROM_UNIXTIME(?) - INTERVAL 3 DAY AND FROM_UNIXTIME(?) ORDER BY received DESC LIMIT 1", undef, $subj_hash, $xover->{'mtime'}, $xover->{'mtime'});
     }
 
     my ($message_id) = md5_hex($xover->{'Message-ID'} =~ m/<(.+?)>/);
@@ -149,8 +155,8 @@ for $group (@ARGV) {
       $message_id,
       $subj_hash,
       $from_hash,
-      $parent->{'thread'} || $num,
-      $parent->{'art'} || 0,
+      $parent->{'thread_id'} || $num,
+      $parent->{'id'} || 0,
       $xover->{'mtime'},
       $xover->{'Date'} || "",
       $xover->{'Message-ID'} || "",
@@ -167,7 +173,8 @@ for $group (@ARGV) {
 
 sub clean_subject {
   my $subj = shift;
-  $subj =~ s/^(Re|An|Antwort|Aw)(\^\d+|\[\d+\]|\(\d+\))?:\s*//i;
+  my $i;
+  while ($subj =~ s/^(Re|An|Antwort|Aw)(\^\d+|\[\d+\]|\(\d+\))?:\s*//i) { last if $i++ > 5 };
   $subj =~ s/\s//g;
   return lc $subj;
 }
