@@ -144,14 +144,14 @@ my $curpos = 0;
 sub respond {
   my ($code, $message) = @_;
   return "$code $message" unless $RESPOND;
-  warn "$code $message\n" if $TRACE;
+  warn "$code $message\n" if $TRACE and !-t STDIN;
   my $s = print "$code $message\r\n";
   $curpos = tell STDOUT;
   return $s;
 }
 
 sub dot () {
-  warn ".\n" if $TRACE;
+  warn ".\n" if $TRACE and !-t STDIN;
   print ".\r\n";
 }
 
