@@ -108,6 +108,16 @@ INSERT INTO articles SET
   h_lines = ?
 QUERY
 
+  my %feed_fh;
+  my $timestamp = time;
+  for my $feed (keys %feeds) {
+    mkpath "feeds/$feed" unless -e "feeds/$feed";
+    my $fh = Symbol::gensym();
+    open ($fh, ">feeds/$feed/$timestamp.$$.tmp")
+	or die "Could not open spool file for feed $feed: $!";
+    $feed_fh{$feed} = $fh;
+  }
+
 for $group (@ARGV) {
   next unless $groups{$group}->{'num'};
   my $grp = $groups{$group}->{'num'};
@@ -166,6 +176,18 @@ for $group (@ARGV) {
       $xover->{'Lines'} || 0,
     ) or die "failed to insert into overview: $DBI::errstr";
 
+    for my $feed (keys %feeds) {
+	my $fh = $feed_fh{$feed};
+	local $| = 1;
+	print $fh "$group/$num\n" or die "could not print to fh for $feed: $!";
+    }
+
+  }
+
+  for my $feed (keys %feeds) {
+    close $feed_fh{$feed} or die "could not close spool file for feed $feed: $!";
+    rename "feeds/$feed/$timestamp.$$.tmp", "feeds/$feed/$timestamp.$$"
+      or die "could not rename spool file for feed $feed: $!";
   }
 
   print " done.\n" if $TRACE;

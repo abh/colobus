@@ -1,0 +1,55 @@
+#!/pkg/bin/perl -w
+use strict;
+use Colobus qw(%config %feeds %groups get_group_max open_article);
+use Carp;
+use File::Path qw(mkpath);
+use Symbol;
+
+Colobus::read_config();
+
+my %feeds_fh;
+my $timestamp;
+my $serial = 0;
+
+my $qfeed = shift;
+
+reopen();
+
+for my $group (keys %groups) {
+  print "doing $group\n";
+  for my $i (1..get_group_max($group)) {
+    my $f;
+    next unless $f = open_article($group, $i) and close $f;
+    for my $feed (keys %feeds) {
+      next unless !$qfeed or $feed eq $qfeed;
+      my $fh = $feeds_fh{$feed};
+      print $fh "$group/$i\n";
+    }
+    reopen() unless $i % 250;
+  }
+  reopen();
+}
+
+reopen();
+
+sub reopen {
+  for my $feed (keys %feeds) {
+    next unless !$qfeed or $feed eq $qfeed;
+    if ($feeds_fh{$feed}) {
+      close $feeds_fh{$feed};
+      $feeds_fh{$feed} = undef;
+      rename "feeds/$feed/$timestamp.$serial.$$.tmp", "feeds/$feed/$timestamp.$serial.$$"
+	or die "could not rename feeds/$feed/$timestamp.$serial.$$.tmp feeds/$feed/$timestamp.$serial.$$: $!";
+    }
+    $serial++;
+    $timestamp = time;
+    mkpath "feeds/$feed" unless -e "feeds/$feed";
+    my $fh = Symbol::gensym();
+    open ($fh, ">feeds/$feed/$timestamp.$serial.$$.tmp")
+      or die "Could not open spool file for feed $feed: $!";
+    $feeds_fh{$feed} = $fh;
+  }
+}
+
+
+1;

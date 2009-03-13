@@ -1,5 +1,7 @@
 #!/usr/bin/perl -w
-# Copyright (c) 2001,2003 Jim Winstead Jr. See the LICENSE file for details.
+# Copyright (c) 2001,2003,2004 Jim Winstead Jr.
+# Copyright (c) 2001,2003,2004,2005,2006,2009 Ask Bjørn Hansen
+# See the LICENSE file for details.
 use strict;
 
 $| = 1;
@@ -9,9 +11,13 @@ $| = 1;
 # or inetd if you're into that sort of thing
 
 package Colobus;
-$Colobus::VERSION = "2.1";
+$Colobus::VERSION = "3.0";
 
 my $TRACE = $ENV{TRACE};
+$TRACE++ if -t STDIN and not defined $TRACE;
+
+# spool_feeds will set this to 0 so it can send commands manually
+my $RESPOND = 1;
 
 my $REMOTE = $ENV{TCPREMOTEIP} || 'console';
 
@@ -23,50 +29,19 @@ use Digest::MD5 qw(md5_hex);
 use Mail::Address ();
 use Time::Local ();
 use Symbol ();
-
+use File::Path qw(mkpath);
 use Data::Dumper ();
+
+use Colobus qw(%config %feeds %groups get_group_max open_article);
 
 # setting this to qw(/usr/sbin/sendmail) should work, but DO NOT ADD -t!
 my (@mailinject) = qw(/var/qmail/bin/qmail-inject -a);
 
 my ($group,$current); # the current group and article number (state!)
 
-my %groups;
-my %config = (
-  timeout    => 300,
-  servername => 'news',
-);
-
 my $config = shift @ARGV || "config";
 
 read_config($config);
-
-sub read_config {
-  my $file = shift;
-  my $fh = Symbol::gensym();
-  open $fh, "<$file"
-    or die "unable to open file '$file': $!";
-
-  while (<$fh>) {
-    chomp;
-    next if m/^\s*#/;
-
-    undef($group), next if m/}/;
-
-    my ($k,$v) = map { s/^\s*(.+?)\s*$/$1/; $_; } split /\s+=>\s+/;
-    if ($k) {
-      read_config($v), next if lc $k eq "include";
-      $groups{$group}{$k} = $v
-	if $group;
-      $config{$k} = $v
-	unless $group;
-    }
-    
-    (($group) = m/group\s*(\S+)\s*{/) 
-      if !$group;
-  }
-  close $fh;
-}
 
 # these are the commands we understand, so far
 my (@commands) = qw(article body date group head help ihave last list
@@ -108,6 +83,14 @@ if (grep { !$groups{$_}->{num} } keys %groups) {
   }
 }
 
+if (@ARGV && $ARGV[0] eq '-s') {
+  spool_feed($ARGV[1]); exit;
+}
+
+if (@ARGV && $ARGV[0] eq '-u') {
+  update_databases(); exit;
+}
+
 my %groupsbyid;
 foreach (keys %groups) {
   next unless $groups{$_}->{num};
@@ -128,7 +111,7 @@ END
 my $xover_sth = $dbh->prepare($query)
   or die($DBI::errstr);
 
-$SIG{ALRM} = sub { exit; };
+$SIG{ALRM} = sub { respond(500, "Timeout!"),exit; };
 
 # output the greeting
 # XXX provide an option so one could have tcpserver send the banner
@@ -160,6 +143,7 @@ my $curpos = 0;
 
 sub respond {
   my ($code, $message) = @_;
+  return "$code $message" unless $RESPOND;
   warn "$code $message\n" if $TRACE;
   my $s = print "$code $message\r\n";
   $curpos = tell STDOUT;
@@ -228,17 +212,6 @@ sub get_group_recommend {
   my ($group) = lc shift
     or return;
   return exists $groups{$group} && exists $groups{$group}->{recommend};
-}
-
-sub open_article {
-  my ($group,$artno) = @_;
-  return unless exists $groups{$group};
-  my $fh = Symbol::gensym();
-  my $file = sprintf("%s/archive/%d/%02d", $groups{$group}->{path},
-                     int $artno / 100, $artno % 100);
-  open $fh, "<$file"
-    or return;
-  return $fh;
 }
 
 sub get_article_xover {
@@ -322,7 +295,6 @@ sub incoming {
   alarm $config{timeout};
   while (<STDIN>) {
     last if /^(\.)?\r?\n$/s;
-    s/^\.//g;
     s/\r\n$/\n/s;
     next if /^Path:/;
     ($newsgroups) = /^Newsgroups: (.+)/ unless $newsgroups;
@@ -451,14 +423,28 @@ sub outgoing {
     s/^\./../s; # fix lines with a leading dot
     s/(?<!\r)\n\z/\r\n/s; # fix lines to end with \r\n
     unless ($pasthead) {
+
+      # regular nntp servers don't like this...
+      next if m/^X-MS-(Has-Attach|TNEF-Correlator):\s*$/;
+      next if m/^(Distribution|Followup-To|Keywords):\s*$/;
+
       next if /^From:/; # skip the from header, we add our own
-      $havedate ||= m/^Date:/;
+      next if /^Path:/; # ""
+      next if /^Newsgroups:/; # ""
+
+      # add a space when it doesn't exist, should probably make that generic...
+      s/^(Content-Type:)(\S)/$1 $2/;
+
+      next if $havemsgid and m/^Message-ID:/i;  # skip duplicate msgids
+      /^Message-ID/i && s/(?<=>) +//;  #trim trailing whitespace
+      $havedate ||= m/^Date:/i;
       $havemsgid ||= s/^Message-ID:/Message-ID:/i;
       $havesubj ||= m/^Subject:/;
       $haveref ||= m/^References:/;
       if ($pasthead = m/^\r?\n$/s) {
         next if $restrict == 2;
 
+	print "Approved: news\@$config{servername}\r\n" if $groups{$group||$ggg}->{moderated};
 	print "From: ", $xover->{From}, "\r\n";
 	print "Date: ",
 	      POSIX::strftime("%a, %d %B %Y %H:%M:%S %z",
@@ -477,6 +463,7 @@ sub outgoing {
       }
       next if $restrict == 2;
     }
+
     print;
   }
   if ($restrict == 3 and not $pasthead) {
@@ -859,8 +846,120 @@ sub xpath {
 
 }
 
+sub spool_feed {
+  my $feed = shift or die "No feed specified...";
+
+  $RESPOND = 0;
+
+  open (STDIN, "<&6")  or die "could not reopen stdin: $!";
+  open (STDOUT, ">&7") or die "could not reopen stdout: $!";
+
+
+  $SIG{ALRM} = sub { respond(500, "Timeout!"),exit; };
+
+  alarm 15;
+  my $resp = <STDIN>;
+  die "Did not get 200 from $feed [$resp]\n" unless $resp =~ m/^200/;
+
+  warn "spooling $feed\n" if $TRACE;
+
+  opendir DIR, "feeds/$feed" or die "could not opendir for $feed: $!";
+  my @files = readdir DIR;
+  closedir DIR;
+  for my $file (sort @files) {
+    next if $file =~ m/\.(tmp|spooling)$/;
+    next if $file =~ m/^\./;
+    next if $file =~ m/~$/;
+    rename "feeds/$feed/$file", "feeds/$feed/$file.spooling" or next;
+    -z "feeds/$feed/$file.spooling" and unlink "feeds/$feed/$file.spooling", next;
+
+    open F, "feeds/$feed/$file.spooling" or die "could not open feeds/$feed/$file: $!";
+    my $timestamp = time;
+    open RESEND, ">feeds/$feed/$timestamp.$$.tmp"
+      or die "could not open feeds/$feed/$timestamp.$$.tmp: $!";
+
+    while (<F>) {
+      chomp;
+      my ($ggg, $artno) = split /\//;
+      warn "sending $artno from $ggg\n" if $TRACE;
+
+      my $xover = get_article_xover($ggg, $artno)
+	or die fault("failed to get xover data for $artno");
+      
+      # figure out the message-id and newsgroups
+      my $id = get_article_message_id_from_xover($group,$artno,$xover);
+
+      alarm 10;
+      
+      print "IHAVE <$id>\r\n";
+
+#          open ERR, ">>feeds/$feed.errors" or die "could not append to errors: $ !";
+#          print ERR "$ggg/$artno offering <$id>\n";
+#          close ERR or die "could not close error spool file";
+
+      
+  # 235 article transferred ok
+  # 335 send article to be transferred.  End with <CR-LF>.<CR-LF>
+  # 435 article not wanted - do not send it
+  # 436 transfer failed - try again later
+  # 437 article rejected - do not try again
+
+      my $resp = <STDIN>;
+
+      if ($resp =~ m/^335/) {
+	warn "they want $artno, sending it!\n" if $TRACE;
+	$group = $ggg;
+	outgoing($artno, 3);
+	my $resp = <STDIN>;
+	$resp =~ s/\r\n//;
+	#warn "$resp; next please!\n" and 
+	next if ($resp =~ m/235/);
+	if ($resp =~ m/^437/) {
+	  open ERR, ">>feeds/$feed.errors" or die "could not append to errors: $!";
+	  print ERR "$ggg/$artno $resp\n";
+	  close ERR or die "could not close error spool file";
+	  next;
+	}
+	warn "$resp; Didn't like it!\n" and next 
+	print(RESEND "$ggg/$artno\n"), next if ($resp =~ m/^436/);
+	die "Unknown response: [$resp]\n";
+      }
+      elsif ($resp =~ m/^435/) {
+	warn "they don't want $artno ($resp), skipping it...\n" if $TRACE;
+	next;
+      }
+      elsif ($resp =~ m/^436/) {
+	print(RESEND "$ggg/$artno\n");
+      }
+      else {
+	die "Unknown response: $resp";
+      }
+      
+      alarm 0;
+      
+    }
+
+    close RESEND;
+    if (-z "feeds/$feed/$timestamp.$$.tmp") {
+      unlink "feeds/$feed/$timestamp.$$.tmp";
+    }
+    else {
+      rename "feeds/$feed/$timestamp.$$.tmp", "feeds/$feed/$timestamp.$$";
+    }
+
+    close F;
+
+    unlink "feeds/$feed/$file.spooling" or die "could not unlink feeds/$feed/$file.spooling: $!";
+
+  }
+
+  return;
+}
+
+
 sub xversion {
   respond(200, "Colobus $Colobus::VERSION");
 }
+
 
 1;
