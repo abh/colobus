@@ -1,12 +1,9 @@
--- MySQL dump 9.09
---
--- Host: localhost    Database: colobus
--- ------------------------------------------------------
--- Server version	4.0.16-standard-log
 
---
--- Table structure for table `header`
---
+CREATE TABLE groups (
+   id    smallint unsigned not null primary key,
+   name  varchar(255) not null,
+   unique key (name)
+) ENGINE=MyISAM;
 
 DROP TABLE IF EXISTS header;
 CREATE TABLE header (
@@ -30,6 +27,7 @@ CREATE TABLE header (
   KEY fromhash (fromhash),
   KEY grp (grp,received),
   KEY grp_2 (grp,thread,parent),
-  KEY grp_3 (grp,subjhash)
-) TYPE=MyISAM DELAY_KEY_WRITE=1;
+  KEY grp_3 (grp,subjhash),
+  KEY subjhash ( subjhash, received )
+) ENGINE=MyISAM DELAY_KEY_WRITE=1;
 

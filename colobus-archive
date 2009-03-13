@@ -43,7 +43,7 @@ sub read_config {
 
     undef($group), next if m/}/;
 
-    my ($k,$v) = map { s/^\s*(.+?)\s*$/$1/; $_; } split /=>/;
+    my ($k,$v) = map { s/^\s*(.+?)\s*$/$1/; $_; } split /\s+=>\s+/;
     if ($k) {
       read_config($v), next if lc $k eq "include";
       $groups{$group}{$k} = $v
@@ -69,6 +69,26 @@ my (%overview); @overview{@overview} = ('') x @overview;
 my $dsn = $config{'dsn'} || "DBI:mysql:database=colobus;host=localhost";
 my $dbh = DBI->connect($dsn, $config{'dbuser'}, $config{'dbpass'}, { PrintError => 1 })
   or die($DBI::errstr);
+
+if (grep { !$groups{$_}->{num} } keys %groups) {
+  my $db_groups = $dbh->selectall_hashref(q[select name,id from groups], 'name' );
+  my $maxid = 0;
+  while (my ($name, $data) = each %$db_groups) {
+    my $id = $data->{id};
+    $groups{$name}->{num} = $id unless $groups{$name}->{num};
+    $maxid = $id if $id > $maxid;
+    warn "group num in groups table and config file differs for $name\n"
+      unless $groups{$name}->{num} == $id;
+  }
+
+  $_ > $maxid and $maxid = $_ for map { $_->{num} } values %groups;
+
+  while (my ($name, $id) = each %groups) {
+      next if ($db_groups->{$name});
+      my $id = ($groups{$name}->{num}) || ++$maxid;
+      $dbh->do(q[insert into groups (name, id) values (?,?)], undef, $name, $id);
+  }
+}
 
 my $ins_header = $dbh->prepare(<<QUERY);
 INSERT INTO header SET 
