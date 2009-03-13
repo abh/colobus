@@ -1,9 +1,9 @@
 #!/pkg/bin/perl -w
 use strict;
-use Colobus qw(%config %feeds %groups);
+use Colobus qw(%config %feeds %groups read_config);
 use Carp;
 
-Colobus::read_config();
+read_config();
 
 for my $feed (keys %feeds) {
   #next unless $feed eq "nntpfeed";

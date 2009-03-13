@@ -82,8 +82,7 @@ QUERY
   my $timestamp = time;
   for my $feed (keys %feeds) {
     mkpath "feeds/$feed" unless -e "feeds/$feed";
-    my $fh = Symbol::gensym();
-    open ($fh, ">feeds/$feed/$timestamp.$$.tmp")
+    open (my $fh, ">feeds/$feed/$timestamp.$$.tmp")
 	or die "Could not open spool file for feed $feed: $!";
     $feed_fh{$feed} = $fh;
   }
@@ -154,13 +153,13 @@ for $group (@ARGV) {
 
   }
 
-  for my $feed (keys %feeds) {
-    close $feed_fh{$feed} or die "could not close spool file for feed $feed: $!";
-    rename "feeds/$feed/$timestamp.$$.tmp", "feeds/$feed/$timestamp.$$"
-      or die "could not rename spool file for feed $feed: $!";
-  }
-
   print " done.\n" if $TRACE;
+}
+
+for my $feed (keys %feeds) {
+  close $feed_fh{$feed} or die "could not close spool file for feed $feed: $!";
+  rename "feeds/$feed/$timestamp.$$.tmp", "feeds/$feed/$timestamp.$$"
+    or die "could not rename spool file for feed $feed: $!";
 }
 
 sub clean_subject {

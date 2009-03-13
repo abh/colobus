@@ -1,4 +1,4 @@
-#!/usr/bin/perl -w
+#!/pkg/bin/perl -w
 # Copyright (c) 2001,2003,2004 Jim Winstead Jr.
 # Copyright (c) 2001,2003,2004,2005,2006,2009 Ask Bjørn Hansen
 # See the LICENSE file for details.
@@ -37,7 +37,7 @@ my (@mailinject) = qw(/var/qmail/bin/qmail-inject -a);
 
 my ($group,$current); # the current group and article number (state!)
 
-my $config = shift @ARGV || "config";
+my $config = 'config';
 
 read_config($config);
 
@@ -81,14 +81,6 @@ if (grep { !$groups{$_}->{num} } keys %groups) {
   }
 }
 
-if (@ARGV && $ARGV[0] eq '-s') {
-  spool_feed($ARGV[1]); exit;
-}
-
-if (@ARGV && $ARGV[0] eq '-u') {
-  update_databases(); exit;
-}
-
 my %groupsbyid;
 foreach (keys %groups) {
   next unless $groups{$_}->{num};
@@ -108,6 +100,10 @@ END
 
 my $xover_sth = $dbh->prepare($query)
   or die($DBI::errstr);
+
+if (@ARGV && $ARGV[0] eq '-s') {
+  spool_feed($ARGV[1]); exit;
+}
 
 $SIG{ALRM} = sub { respond(500, "Timeout!"),exit; };
 
@@ -881,11 +877,11 @@ sub spool_feed {
       my ($ggg, $artno) = split /\//;
       warn "sending $artno from $ggg\n" if $TRACE;
 
-      my $xover = get_article_xover($ggg, $artno)
+      my ($xover) = get_article_xover($ggg, $artno)
 	or die fault("failed to get xover data for $artno");
       
       # figure out the message-id and newsgroups
-      my $id = get_article_message_id_from_xover($group,$artno,$xover);
+      my $id = get_article_message_id_from_xover($group,$xover);
 
       alarm 10;
       
