@@ -29,10 +29,8 @@ use Digest::MD5 qw(md5_hex);
 use Mail::Address ();
 use Time::Local ();
 use Symbol ();
-use File::Path qw(mkpath);
-use Data::Dumper ();
 
-use Colobus qw(%config %feeds %groups get_group_max open_article);
+use Colobus qw(%config %feeds %groups get_group_max open_article read_config);
 
 # setting this to qw(/usr/sbin/sendmail) should work, but DO NOT ADD -t!
 my (@mailinject) = qw(/var/qmail/bin/qmail-inject -a);
