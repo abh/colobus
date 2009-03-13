@@ -2,7 +2,7 @@ package Colobus;
 use strict;
 use vars qw(@EXPORT_OK @ISA %config %groups %feeds);
 use Exporter;
-@EXPORT_OK = qw(%config %groups %feeds get_group_max open_article);
+@EXPORT_OK = qw(%config %groups %feeds get_group_max open_article read_config);
 @ISA = qw(Exporter);
 
 %config = (

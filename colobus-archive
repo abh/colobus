@@ -6,18 +6,15 @@ use Mail::Address ();
 use Digest::MD5 qw(md5_hex);
 use Symbol qw(gensym);
 use Getopt::Long;
+use File::Path qw(mkpath);
 
 use Data::Dumper;
+
+use Colobus qw(%config %feeds %groups get_group_max open_article read_config);
 
 my $TRACE = -t || $ENV{TRACE};
 
 my $group;
-
-my %groups;
-my %config = (
-  timeout    => 300,
-  servername => 'news',
-);
 
 $| = 1;
 
@@ -30,33 +27,6 @@ GetOptions(
 );
 
 read_config($config);
-
-sub read_config {
-  my $file = shift;
-  my $fh = Symbol::gensym();
-  open $fh, "<$file"
-    or die "unable to open file '$file': $!";
-
-  while (<$fh>) {
-    chomp;
-    next if m/^\s*#/;
-
-    undef($group), next if m/}/;
-
-    my ($k,$v) = map { s/^\s*(.+?)\s*$/$1/; $_; } split /\s+=>\s+/;
-    if ($k) {
-      read_config($v), next if lc $k eq "include";
-      $groups{$group}{$k} = $v
-        if $group;
-      $config{$k} = $v
-        unless $group;
-    }
-
-    (($group) = m/group\s*(\S+)\s*{/)
-      if !$group;
-  }
-  close $fh;
-}
 
 @ARGV = sort keys %groups if $all;
 
@@ -201,16 +171,6 @@ sub clean_subject {
   return lc $subj;
 }
 
-sub open_article {
-  my ($group,$artno) = @_;
-  return unless exists $groups{$group};
-  my $fh = Symbol::gensym();
-  my $file = sprintf("%s/archive/%d/%02d", $groups{$group}->{path},
-                     int $artno / 100, $artno % 100);
-  open $fh, "<$file"
-    or return;
-  return $fh;
-}
 
 sub get_article_xover_from_file {
   my ($group,$artno) = @_;
