@@ -46,9 +46,6 @@ sub read_config {
   }
   close $fh;
 
-  use Data::Dumper qw(Dumper);
-  warn Dumper(\%config);
-
 }
 
 sub get_group_max {
