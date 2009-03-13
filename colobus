@@ -103,9 +103,9 @@ SELECT h_subject AS `Subject`, h_from AS `From`, h_date AS `Date`,
        h_references AS `References`,
        h_lines AS `Lines`,
        msgid,
-       art
- FROM header
- WHERE grp = ? AND art >= ? AND art <= ?
+       id
+ FROM articles
+ WHERE group_id = ? AND id >= ? AND id <= ?
 END
 
 my $xover_sth = $dbh->prepare($query)
@@ -193,7 +193,7 @@ sub get_group_minmax {
   my ($group) = lc shift;
   my $grp = $groups{$group}->{'num'}
     or return;
-  return $dbh->selectrow_array("SELECT MIN(art),MAX(art) FROM header WHERE grp = ?", undef, $grp);
+  return $dbh->selectrow_array("SELECT MIN(id),MAX(id) FROM articles WHERE group_id = ?", undef, $grp);
 }
 
 # we guess the group creation time from the modified time of the
@@ -226,7 +226,7 @@ sub get_article_xover {
   while (my $xover = $xover_sth->fetchrow_hashref) {
     my $msgid = get_article_message_id_from_xover($group,$xover);
     # generate xref and newsgroups info
-    my $query = qq{SELECT grp,art FROM header WHERE msgid = ?};
+    my $query = qq{SELECT group_id,id FROM articles WHERE msgid = ?};
     my $res = $dbh->selectall_arrayref($query, undef, md5_hex($msgid));
 
     $xover->{'xref'}
