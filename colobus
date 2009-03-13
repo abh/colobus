@@ -1,4 +1,4 @@
-#!/usr/bin/perl -w
+#!/pkg/bin/perl -w
 # Copyright (c) 2001 Jim Winstead Jr. See the LICENSE file for details.
 use strict;
 
@@ -9,9 +9,13 @@ $| = 1;
 # or inetd if you're into that sort of thing
 
 package Colobus;
-$Colobus::VERSION = "0.8";
+$Colobus::VERSION = "0.9/ask-0.6.3-dev";
 
 my $TRACE = $ENV{TRACE};
+$TRACE++ if -t STDIN and not defined $TRACE;
+
+# spool_feeds will set this to 0 so it can send commands manually
+my $RESPOND = 1;
 
 use POSIX ();
 use BerkeleyDB qw(DB_CREATE DB_LAST DB_RDONLY DB_INIT_CDB DB_INIT_MPOOL);
@@ -20,53 +24,24 @@ use MLDBM qw(BerkeleyDB::Btree Storable);
 use Mail::Address ();
 use Time::Local ();
 use Symbol ();
-
+use File::Path qw(mkpath);
 use Data::Dumper ();
+
+use Colobus qw(%config %feeds %groups get_group_max open_article);
 
 # setting this to qw(/usr/sbin/sendmail) should work, but DO NOT ADD -t!
 my (@mailinject) = qw(/var/qmail/bin/qmail-inject -a);
 
 my ($group,$current); # the current group and article number (state!)
 
-my %groups;
-my %config = (
-  timeout    => 300,
-  servername => 'news',
-);
+Colobus::read_config("config");
 
-read_config("config");
-
-sub read_config {
-  my $file = shift;
-  my $fh = Symbol::gensym();
-  open $fh, "<$file"
-    or die "unable to open file '$file': $!";
-
-  while (<$fh>) {
-    chomp;
-    next if m/^\s*#/;
-
-    undef($group), next if m/}/;
-
-    my ($k,$v) = map { s/^\s*(.+?)\s*$/$1/; $_; } split /=>/;
-    if ($k) {
-      read_config($v), next if lc $k eq "include";
-      $groups{$group}{$k} = $v
-	if $group;
-      $config{$k} = $v
-	unless $group;
-    }
-    
-    (($group) = m/group\s*(\S+)\s*{/) 
-      if !$group;
-  }
-  close $fh;
-}
+#warn Data::Dumper->Dump([\%feeds, \%groups], [qw(feeds groups)]);
 
 # these are the commands we understand, so far
 my (@commands) = qw(article body date group head help ihave last list
                     listgroup mode next newgroups newnews post quit slave
-                    stat xgtitle xhdr xover xpat xrover);
+                    stat xgtitle xhdr xover xpat xpath xrover xversion);
 my (%commands); @commands{@commands} = ('') x @commands;
 if ($config{disallow}) {
   foreach (map { s/^\s*(.+?)\s*$/$1/; $_; } split /,/, $config{disallow}) {
@@ -78,6 +53,10 @@ if ($config{disallow}) {
 my (@overview) = qw(Subject From Date Message-ID References Bytes
                     Lines);
 my (%overview); @overview{@overview} = ('') x @overview;
+
+if (@ARGV && $ARGV[0] eq '-s') {
+  spool_feed($ARGV[1]); exit;
+}
 
 if (@ARGV && $ARGV[0] eq '-u') {
   update_databases(); exit;
@@ -91,18 +70,20 @@ if (@ARGV && $ARGV[0] eq '-d') {
   dump_databases(); exit;
 }
 
+$0 = "colobus - connection from $ENV{TCPREMOTEIP}, connected " . scalar localtime if $ENV{TCPREMOTEIP};
+
 my $dbenv = new BerkeleyDB::Env
-		-Flags => DB_INIT_CDB|DB_INIT_MPOOL,
-  or die "failed to open env: $!";
+		-Flags => DB_INIT_CDB|DB_INIT_MPOOL|DB_CREATE,
+  or die "failed to open bdb env: $! $BerkeleyDB::Error";
+
 my $msgids = open_msgids($dbenv,1);
 
-$SIG{ALRM} = sub { exit; };
+$SIG{ALRM} = sub { respond(500, "Timeout!"),exit; };
 
 # output the greeting
 # XXX provide an option so one could have tcpserver send the banner
 respond(200, "$config{servername} - colobus $Colobus::VERSION ready - (posting ok).");
 
-my ($commands) = '';
 alarm $config{timeout};
 while (<STDIN>) {
   $_ =~ s/\r?\n$//s; # advanced chomp
@@ -127,8 +108,9 @@ sub dispatch {
 
 sub respond {
   my ($code, $message) = @_;
+  return "$code $message" unless $RESPOND;
   warn "$code $message\n" if $TRACE;
-  print "$code $message\r\n";
+  return print "$code $message\r\n";
 }
 
 sub dot () {
@@ -161,21 +143,6 @@ sub get_group_min {
   return $groups{$group}->{first} || 1;
 }
 
-sub get_group_max {
-  my ($group) = lc shift
-    or return;
-  return unless exists $groups{$group};
-  my $num_file = $groups{$group}->{path}."/num";
-  if (open FILE, "<$num_file") {
-    my ($max) = (<FILE> =~ m/^(\d+)/);
-    close FILE;
-    return $max;
-  }
-  else {
-    warn "Could not open $num_file: $!\n";
-  }
-}
-
 # we guess the group creation time from the modified time of the
 # first message in the archive. should be close enough.
 sub get_group_creation {
@@ -194,16 +161,7 @@ sub get_group_recommend {
   return exists $groups{$group} && exists $groups{$group}->{recommend};
 }
 
-sub open_article {
-  my ($group,$artno) = @_;
-  return unless exists $groups{$group};
-  my $fh = Symbol::gensym();
-  my $file = sprintf("%s/archive/%d/%02d", $groups{$group}->{path},
-                     int $artno / 100, $artno % 100);
-  open $fh, "<$file"
-    or (warn("unable to open '$file': $!"), return);
-  return $fh;
-}
+use Symbol ();
 
 sub get_article_xover {
   my ($group,$artno) = @_;
@@ -231,24 +189,33 @@ sub get_article_xover_from_file {
   my $article = open_article($group,$artno)
     or return;
   my (%xover);
+  my $body  = 0;
+  my $lines = 0;
   while (my $line = <$article>) {
-    last unless $line =~ /\S/;
-    foreach my $header (keys %overview) {
-      if ($line =~ m/^$header: (.+?)\r?\n/is) {
-        ($xover{$header} = $1) =~ s/\s/ /g;
-      }
-      if (!$xover{'References'} && $line =~ m/^In-Reply-To: (.+?)\r?\n/is) {
-        ($xover{'References'}) = ($1 =~ m/(<.+?>)/);
+    $body = 1 unless $body or $line =~ /\S/;
+    last if $body and $xover{Lines};
+    $lines++ if $body;
+    unless ($body) {
+      foreach my $header (keys %overview) {
+	if ($line =~ m/^$header: (.+?)\r?\n/is) {
+	  ($xover{$header} = $1) =~ s/\s/ /g;
+	}
+	if (!$xover{'References'} && $line =~ m/^In-Reply-To: (.+?)\r?\n/is) {
+	  ($xover{'References'}) = ($1 =~ m/(<.+?>)/);
+	}
       }
     }
   }
+
+  $xover{'Lines'} ||= $lines;
+
   # make sure we have a message-id
   $xover{'Message-ID'} ||= "<$group-$artno\@$config{servername}>";
 
   # fix the From header
   my ($from) = Mail::Address->parse($xover{From});
   if ($from) {
-    $xover{From} = $from->address;
+    $xover{From} = eval { $from->address };
     $xover{From} .= " (".$from->name.")" if $from->name;
   }
   else {
@@ -295,11 +262,12 @@ sub incoming {
   my ($newsgroups,$from,$to,$headers);
   $headers = '';
 
+  my $cancel_message = 0;
+
   # scoop up the headers
   alarm $config{timeout};
   while (<STDIN>) {
     last if /^(\.)?\r?\n$/s;
-    s/^\.//g;
     s/\r\n$/\n/s;
     next if /^Path:/;
     ($newsgroups) = /^Newsgroups: (.+)/ unless $newsgroups;
@@ -308,6 +276,7 @@ sub incoming {
       and ($from) = (Mail::Address->parse($1))[0]->address;
     next if (!$to && (($to) = /^To: (.+?)\s*$/s));
     next if /^Newsgroups:/;
+    ++$cancel_message and next if /^Cancel:/; 
     $headers .= $_;
     alarm $config{timeout};
   }
@@ -316,6 +285,8 @@ sub incoming {
     unless $newsgroups;
   return respond($ihave ? 437 : 441,"posting failed - no from specified")
     unless $from;
+  return respond($ihave ? 437 : 441,"posting failed - invalid from")
+    unless $from =~ m/^.+?@[-.\w]+$/;
 
   my (@mailto);
 
@@ -326,6 +297,9 @@ sub incoming {
   }
   return respond($ihave ? 437 : 441, "posting failed - no newsgroups known")
     unless @mailto;
+
+  return respond($ihave ? 437 : 441, "cancels not accepted here")
+    if $from =~ m/remove.spam\@mindspring.com/ or $cancel_message; 
 
   open(FILE, "|-")
     || exec @mailinject, "-f$from", @mailto;
@@ -398,23 +372,39 @@ sub outgoing {
   unless ($restrict == 2) {
     print "Newsgroups: ", $xover->{newsgroups} || $group, "\r\n";
     print "Path: $config{servername}\r\n";
-    print "Xref: $config{servername} ", $xover->{xref}, "\r\n"
-      if $xover->{xref};
+    my $xref = $xover->{xref} 
+      ? $xover->{xref}
+      : "$group:$which";
+    print "Xref: $config{servername} ", $xref, "\r\n"
   }
 
   my ($pasthead,$havedate,$havemsgid,$havesubj,$haveref);
   while (<$article>) {
     alarm $config{timeout};
-    s/^\.(\r?\n)/..$1/s; # fix lines with a single dot
+    s/^\./../s; # fix lines with a leading dot
     s/(?<!\r)\n\z/\r\n/s; # fix lines to end with \r\n
     unless ($pasthead) {
+
+      # regular nntp servers don't like this...
+      next if m/^X-MS-(Has-Attach|TNEF-Correlator):\s*$/;
+      next if m/^(Distribution|Followup-To|Keywords):\s*$/;
+
       next if /^From:/; # skip the from header, we add our own
-      $havedate ||= m/^Date:/;
+      next if /^Path:/; # ""
+      next if /^Newsgroups:/; # ""
+
+      # add a space when it doesn't exist, should probably make that generic...
+      s/^(Content-Type:)(\S)/$1 $2/;
+
+      next if $havemsgid and m/^Message-ID:/i;  # skip duplicate msgids
+      /^Message-ID/i && s/(?<=>) +//;  #trim trailing whitespace
+      $havedate ||= m/^Date:/i;
       $havemsgid ||= s/^Message-ID:/Message-ID:/i;
       $havesubj ||= m/^Subject:/;
       $haveref ||= m/^References:/;
       if ($pasthead = m/^\r?\n$/s) {
         next if $restrict == 2;
+	print "Approved: news\@$config{servername}\r\n" if $groups{$group||$ggg}->{moderated};
         print "From: ", $xover->{From}, "\r\n";
         print "Date: ",
               POSIX::strftime("%a, %d %B %Y %H:%M:%S %z",
@@ -429,6 +419,7 @@ sub outgoing {
       }
       next if $restrict == 2;
     }
+
     print;
   }
   dot();
@@ -474,6 +465,8 @@ sub group {
     or return respond(501, "no group specified");
   return respond(411, "no such news group")
     if !exists($groups{$ggg});
+
+  warn "$$ group $ggg\n" if $config{usagelog};
 
   my $max = get_group_max($ggg)
     or return fault("unable to get max for $ggg");
@@ -538,7 +531,7 @@ sub list {
   elsif ($list eq 'overview.fmt') {
     respond(215, "order of fields in overview database");
     foreach (@overview) {
-      print "$_\r\n";
+      print "$_:\r\n";
     }
     print "Xref:full\r\n";
     return dot();
@@ -606,7 +599,7 @@ sub next {
 sub newgroups {
   my ($date,$time,$gmt) = @_;
   return fault("invalid date or time format")
-    unless $date && $time && (!$gmt || $gmt == 'GMT' || $gmt == 'UTC');
+    unless $date && $time && (!$gmt || $gmt eq 'GMT' || $gmt eq 'UTC');
 
   my ($since);
   my ($y,$m,$d,$h,$i,$s) = (unpack("a2a2a2", $date), unpack("a2a2a2",$time));
@@ -687,6 +680,17 @@ sub xhdr {
     $begin ||= $current;
   }
 
+  # force the header into the case we use in the overview database
+  foreach (keys %overview) {
+    $header =~ s/^$_$/$_/i;
+  }
+
+  # short-circuit for headers not in overview database
+  unless (exists $overview{$header}) {
+    respond($code, "$header not in overview database, returning empty list");
+    return dot();
+  }
+
   my $min = get_group_min($group);
   my $max = get_group_max($group);
 
@@ -750,6 +754,22 @@ sub xrover {
   xhdr("References",shift,224,@_);
 }
 
+sub xpath {
+  my $id = shift;
+  if ($id && $id =~ m/^<(.+?)>$/) {
+    my ($ggg,$begin) = get_group_and_article($1);
+    respond(223, "$ggg/$begin");
+  } 
+  else {
+    respond(501, "invalid msgid");
+  }
+
+}
+
+sub xversion {
+  respond(200, "Colobus $Colobus::VERSION");
+}
+
 =head1 DATABASE HANDLING
 
 =cut
@@ -760,7 +780,7 @@ sub open_group_xover {
   my $db = tie %xover, 'MLDBM', -Filename => "db/$group.db",
            -Env => $env,
            -Flags => $ro ? DB_RDONLY : DB_CREATE
-    or die "unable to open database for $group: $!";
+    or die "unable to open database for $group: $! $BerkeleyDB::Error";
 
   $db->filter_fetch_key  ( sub { $_ = unpack("i", $_) } );
   $db->filter_store_key  ( sub { $_ = pack ("i", $_) } ) ;
@@ -774,7 +794,7 @@ sub open_msgids {
   my $db = tie %msgid, 'MLDBM', -Filename => "db/messageid.db",
            -Env => $env,
            -Flags => ($ro ? DB_RDONLY : DB_CREATE)
-    or die "unable to open database: $!";
+    or die "unable to open database: $! $BerkeleyDB::Error";
 
   return \%msgid;
 }
@@ -782,7 +802,7 @@ sub open_msgids {
 sub update_databases {
   my ($env) = new BerkeleyDB::Env
                   -Flags => DB_INIT_CDB|DB_INIT_MPOOL|DB_CREATE
-    or die "failed to create env: $!";
+    or die "failed to create env: $! $BerkeleyDB::Error";
 
   my ($msgids) = open_msgids($env);
 
@@ -791,12 +811,24 @@ sub update_databases {
     @groups = sort keys %groups;
   }
 
+  my %feed_fh;
+  my $timestamp = time;
+  for my $feed (keys %feeds) {
+    mkpath "feeds/$feed" unless -e "feeds/$feed";
+    my $fh = Symbol::gensym();
+    open ($fh, ">feeds/$feed/$timestamp.$$.tmp")
+	or die "Could not open spool file for feed $feed: $!";
+    $feed_fh{$feed} = $fh;
+  }
+
   foreach (@groups) {
     print "updating $_ " if $TRACE;
 
     my $db = open_group_xover($env,$_);
 
     my $max = get_group_max($_);
+    next unless $max;
+
     my ($last) = $max;
     1 until ($db->{$last} || !(--$last));
 
@@ -811,10 +843,16 @@ sub update_databases {
 
     my $last_num_length = 0;
     foreach my $artno ($first..$max) {
-      if ($force and !($artno % 50)) {
-	print "\b" x $last_num_length, $artno;
+      if (($force and $TRACE) and !($artno % 25)) {
+        print "\b" x $last_num_length, $artno;
 	$last_num_length = length $artno;
       }
+      for my $feed (keys %feeds) {
+	my $fh = $feed_fh{$feed};
+	local $| = 1;
+	print $fh "$_/$artno\n" or die "could not print to fh for $feed: $!";
+      }
+
       my $xover = get_article_xover_from_file($_,$artno)
         or next;
       $db->{$artno} = $xover;
@@ -826,11 +864,133 @@ sub update_databases {
     print "\b" x $last_num_length, $max if $TRACE;
     print " - done.\n" if $TRACE;
   }
+
+  for my $feed (keys %feeds) {
+    close $feed_fh{$feed} or die "could not close spool file for feed $feed: $!";
+    rename "feeds/$feed/$timestamp.$$.tmp", "feeds/$feed/$timestamp.$$"
+      or die "could not rename spool file for feed $feed: $!";
+  }
+
+}
+
+sub spool_feed {
+  my $feed = shift or die "No feed specified...";
+
+  $RESPOND = 0;
+
+  open (STDIN, "<&6")  or die "could not reopen stdin: $!";
+  open (STDOUT, ">&7") or die "could not reopen stdout: $!";
+
+
+  $SIG{ALRM} = sub { respond(500, "Timeout!"),exit; };
+
+  alarm 15;
+  my $resp = <STDIN>;
+  die "Did not get 200 from $feed [$resp]\n" unless $resp =~ m/^200/;
+
+  warn "spooling $feed\n" if $TRACE;
+
+  opendir DIR, "feeds/$feed" or die "could not opendir for $feed: $!";
+  my @files = readdir DIR;
+  closedir DIR;
+  for my $file (sort @files) {
+    next if $file =~ m/\.(tmp|spooling)$/;
+    next if $file =~ m/^\./;
+    next if $file =~ m/~$/;
+    rename "feeds/$feed/$file", "feeds/$feed/$file.spooling" or next;
+    -z "feeds/$feed/$file.spooling" and unlink "feeds/$feed/$file.spooling", next;
+
+    open F, "feeds/$feed/$file.spooling" or die "could not open feeds/$feed/$file: $!";
+    my $timestamp = time;
+    open RESEND, ">feeds/$feed/$timestamp.$$.tmp"
+      or die "could not open feeds/$feed/$timestamp.$$.tmp: $!";
+
+    while (<F>) {
+      chomp;
+      my ($ggg, $artno) = split /\//;
+      warn "sending $artno from $ggg\n" if $TRACE;
+
+      my $xover = get_article_xover($ggg, $artno)
+	or die fault("failed to get xover data for $artno");
+      
+      # figure out the message-id and newsgroups
+      my $id = get_article_message_id_from_xover($group,$artno,$xover);
+
+      alarm 10;
+      
+      print "IHAVE <$id>\r\n";
+
+#          open ERR, ">>feeds/$feed.errors" or die "could not append to errors: $ !";
+#          print ERR "$ggg/$artno offering <$id>\n";
+#          close ERR or die "could not close error spool file";
+
+      
+  # 235 article transferred ok
+  # 335 send article to be transferred.  End with <CR-LF>.<CR-LF>
+  # 435 article not wanted - do not send it
+  # 436 transfer failed - try again later
+  # 437 article rejected - do not try again
+
+      my $resp = <STDIN>;
+
+      if ($resp =~ m/^335/) {
+	warn "they want $artno, sending it!\n" if $TRACE;
+	$group = $ggg;
+	outgoing($artno, 3);
+	my $resp = <STDIN>;
+	$resp =~ s/\r\n//;
+	#warn "$resp; next please!\n" and 
+	next if ($resp =~ m/235/);
+	if ($resp =~ m/^437/) {
+	  open ERR, ">>feeds/$feed.errors" or die "could not append to errors: $!";
+	  print ERR "$ggg/$artno $resp\n";
+	  close ERR or die "could not close error spool file";
+	  next;
+	}
+	warn "$resp; Didn't like it!\n" and next 
+	print(RESEND "$ggg/$artno\n"), next if ($resp =~ m/^436/);
+	die "Unknown response: [$resp]\n";
+      }
+      elsif ($resp =~ m/^435/) {
+	warn "they don't want $artno ($resp), skipping it...\n" if $TRACE;
+	next;
+      }
+      elsif ($resp =~ m/^436/) {
+	print(RESEND "$ggg/$artno\n");
+      }
+      else {
+	die "Unknown response: $resp";
+      }
+      
+      alarm 0;
+      
+    }
+
+    close RESEND;
+    if (-z "feeds/$feed/$timestamp.$$.tmp") {
+      unlink "feeds/$feed/$timestamp.$$.tmp";
+    }
+    else {
+      rename "feeds/$feed/$timestamp.$$.tmp", "feeds/$feed/$timestamp.$$";
+    }
+
+    close F;
+
+    unlink "feeds/$feed/$file.spooling" or die "could not unlink feeds/$feed/$file.spooling: $!";
+
+  }
+
+  # Opens a directory named EXPR for processing by C<readdir()>,
+  # C<telldir()>, C<seekdir()>, C<rewinddir()>, and C<closedir()>.
+  # Returns TRUE if successful.  DIRHANDLEs have their own namespace
+  # separate from FILEHANDLEs. 
+
+  return;
 }
 
 sub dump_databases {
   my $env = new BerkeleyDB::Env(-Flags => DB_INIT_CDB|DB_INIT_MPOOL)
-    or die "failed to create env: $!";
+    or die "failed to create env: $! $BerkeleyDB::Error";
   my ($msgids) = open_msgids($env,1);
   print Data::Dumper::Dumper($msgids);
 
