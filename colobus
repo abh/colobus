@@ -53,7 +53,7 @@ if ($config{disallow}) {
 }
 
 # these are the headers we track for the overview database
-my (@overview) = qw(Subject From Date Message-ID References Lines);
+my (@overview) = qw(Subject From Date Message-ID References Bytes Lines);
 my (%overview); @overview{@overview} = ('') x @overview;
 
 my $dsn = $config{'dsn'} || "DBI:mysql:database=colobus;host=localhost";
@@ -92,6 +92,7 @@ SELECT h_subject AS `Subject`, h_from AS `From`, h_date AS `Date`,
        h_messageid AS `Message-ID`,
        h_references AS `References`,
        h_lines AS `Lines`,
+       h_bytes AS 'Bytes',
        msgid,
        id
  FROM articles
