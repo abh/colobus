@@ -32,6 +32,8 @@ read_config($config);
 
 die "usage: $0 [-a] [-c config] group ...\n" unless @ARGV;
 
+# TODO -- add support for 'Bytes' here
+
 # these are the headers we track for the overview database
 my (@overview) = qw(Subject From Date Message-ID References In-Reply-To Lines);
 my (%overview); @overview{@overview} = ('') x @overview;
