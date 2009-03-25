@@ -13,6 +13,14 @@ $| = 1;
 package Colobus;
 $Colobus::VERSION = "3.0";
 
+if (-e ".git") {
+    local $ENV{PATH} = "/usr/bin:/usr/local/bin:/opt/local/bin/";
+    if (my $git = `git describe`) {
+        chomp $git;
+        $Colobus::VERSION .= " ($git)";
+    }
+}
+
 my $TRACE = $ENV{TRACE};
 $TRACE++ if -t STDIN and not defined $TRACE;
 
