@@ -1,4 +1,4 @@
-#!/pkg/bin/perl -w
+#!/usr/bin/perl -w
 use strict;
 use Colobus qw(%config %feeds %groups get_group_max open_article);
 use Carp;

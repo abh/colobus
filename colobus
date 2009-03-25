@@ -1,4 +1,4 @@
-#!/pkg/bin/perl -w
+#!/usr/bin/perl -w
 # Copyright (c) 2001,2003,2004 Jim Winstead Jr.
 # Copyright (c) 2001,2003,2004,2005,2006,2009 Ask Bjørn Hansen
 # See the LICENSE file for details.
