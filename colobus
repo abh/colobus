@@ -72,7 +72,7 @@ if (grep { !$groups{$_}->{num} } keys %groups) {
       unless $groups{$name}->{num} == $id;
   }
 
-  $_ > $maxid and $maxid = $_ for map { $_->{num} } values %groups;
+  $_ > $maxid and $maxid = $_ for map { $_->{num} || 0 } values %groups;
 
   while (my ($name, $id) = each %groups) {
       next if ($db_groups->{$name});
