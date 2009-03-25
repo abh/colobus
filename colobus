@@ -227,7 +227,7 @@ sub get_article_xover {
     $xover->{'xref'}
       = join ' ', map { $groupsbyid{$_->[0]}.":".$_->[1] } @$res if $res;
 
-    $xover->{'xref'} ||= $group . ":" . $xover->{'art'};
+    $xover->{'xref'} ||= $group . ":" . $xover->{'id'};
 
     ($xover->{'newsgroups'} = $xover->{'xref'}) =~ s/(:\d+)//g;
     $xover->{'newsgroups'} =~ s/\s+/,/g;
@@ -250,7 +250,7 @@ sub get_article_message_id_from_xover {
   if ($xover->{'Message-ID'} && $xover->{'Message-ID'} =~ m/<(.+?)>/) {
     return $1;
   }
-  return "$group-" . $xover->{'art'} . "\@$config{servername}";
+  return "$group-" . $xover->{'id'} . "\@$config{servername}";
 }
 
 sub get_group_and_article {
@@ -781,7 +781,7 @@ sub xhdr {
       next ARTICLE unless wildmat($p,$xover->{$header});
     }
     next unless $xover->{$header};
-    print $xover->{'art'}," ",$xover->{$header}, "\r\n";
+    print $xover->{'id'}," ",$xover->{$header}, "\r\n";
     #XXX fix support for multiple requested headers 
   }
   #XXX include @pats in log
@@ -810,7 +810,7 @@ sub xover {
   alarm $config{timeout};
   my (@xover) = get_article_xover($group, $begin, $end);
   foreach my $xover (@xover) {
-    print $xover->{'art'};
+    print $xover->{'id'};
     foreach my $header (@overview) {
       print "\t", ($xover->{$header} || "");
     }
