@@ -11,7 +11,7 @@ for my $feed (keys %feeds) {
   my $host = $feeds{$feed}->{host};
   my %args;
   %args = (silent => 1) unless -t STDIN;
-  run("tcpclient -RHl0 $host nntp ./colobus -s $feed", { %args, failok => 1 });
+  run("tcpclient -RHl0 $host nntp $^X ./colobus -s $feed", { %args, failok => 1 });
 }
 
 sub run {
