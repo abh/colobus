@@ -266,7 +266,7 @@ sub get_group_and_article {
 
   $msgid =~ s/\[at\]/@/;        # perl.org web obfuscation
 
-  my $query = qq{SELECT grp,art FROM header WHERE msgid = ? LIMIT 1};
+  my $query = qq{SELECT group_id,id FROM articles WHERE msgid = ? LIMIT 1};
 
   my $res = $dbh->selectrow_hashref($query, undef, md5_hex($msgid));
 
@@ -515,7 +515,7 @@ sub help {
 }
 
 sub have_messageid {
-  return scalar $dbh->selectrow_array("SELECT grp,art FROM header WHERE msgid = ?", undef, md5_hex(shift));
+  return scalar $dbh->selectrow_array("SELECT group_id,id FROM articles WHERE msgid = ?", undef, md5_hex(shift));
 }
 
 sub ihave {
