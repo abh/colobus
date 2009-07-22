@@ -270,7 +270,7 @@ sub get_group_and_article {
 
   my $res = $dbh->selectrow_hashref($query, undef, md5_hex($msgid));
 
-  return $res ? ($groupsbyid{$res->{grp}}, $res->{art})
+  return $res ? ($groupsbyid{$res->{group_id}}, $res->{id})
               : ($msgid =~ m/^(.+?)-(\d+)\@$config{servername}$/);
 
   return ($msgid =~ m/^(.+?)-(\d+)\@$config{servername}$/);
