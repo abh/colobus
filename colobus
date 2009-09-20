@@ -435,8 +435,8 @@ sub outgoing {
       next if /^Path:/; # ""
       next if /^Newsgroups:/; # ""
 
-      # add a space when it doesn't exist, should probably make that generic...
-      s/^(Content-Type:)(\S)/$1 $2/;
+      # add a space when it doesn't exist
+      s/^(\S+:)(\S)/$1 $2/;
 
       next if $havemsgid and m/^Message-ID:/i;  # skip duplicate msgids
       /^Message-ID/i && s/(?<=>) +//;  #trim trailing whitespace
