@@ -816,14 +816,19 @@ sub xover {
 
   respond(224, "overview information follows for $begin to $end");
   alarm $config{timeout};
-  my (@xover) = get_article_xover($group, $begin, $end);
-  foreach my $xover (@xover) {
-    print $xover->{'id'};
-    foreach my $header (@overview) {
-      print "\t", ($xover->{$header} || "");
+  my $last = $begin - 1;
+  while ($last < $end) {
+    $last = $last + 5000;
+    $last = $end if $last > $end;
+    my (@xover) = get_article_xover($group, $begin, $last);
+    foreach my $xover (@xover) {
+      print $xover->{'id'};
+      foreach my $header (@overview) {
+	print "\t", ($xover->{$header} || "");
+      }
+      print "\tXref: ", ($xover->{xref} || "");
+      print "\r\n";
     }
-    print "\tXref: ", ($xover->{xref} || "");
-    print "\r\n";
   }
   note("/$group?b=$begin&e=$end");
   dot();
