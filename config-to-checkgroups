@@ -1,0 +1,18 @@
+#!/usr/bin/perl -w
+use strict;
+
+=pod
+
+Helper script for converting colobus config format to a checkgroups
+list.
+
+=cut
+
+use Colobus qw(%config read_config);
+read_config($ARGV[0] or 'config');
+
+for my $g (sort keys %groups) {
+    print $g,"\t\t",$groups{$g}->{mail}; # we want to use desc here, but it's probably too long
+    print " (Moderated)" if $groups{$g}->{moderated};
+    print "\n";
+}
