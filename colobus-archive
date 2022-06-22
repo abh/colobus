@@ -85,7 +85,7 @@ QUERY
   for my $feed (keys %feeds) {
     mkpath "feeds/$feed" unless -e "feeds/$feed";
     open (my $fh, ">feeds/$feed/$timestamp.$$.tmp")
-	or die "Could not open spool file for feed $feed: $!";
+      or die "Could not open spool file for feed $feed: $!";
     $feed_fh{$feed} = $fh;
   }
 
@@ -148,9 +148,9 @@ for $group (@ARGV) {
     ) or die "failed to insert into overview: $DBI::errstr";
 
     for my $feed (keys %feeds) {
-	my $fh = $feed_fh{$feed};
-	local $| = 1;
-	print $fh "$group/$num\n" or die "could not print to fh for $feed: $!";
+      my $fh = $feed_fh{$feed};
+      local $| = 1;
+      print $fh "$group/$num\n" or die "could not print to fh for $feed: $!";
     }
 
   }
@@ -190,14 +190,14 @@ LINE:
     $lines++ if $body;
     unless ($body) {
       if ($lastheader && ($line =~ m/^\s+(.+?)\r?\n/is)) {
-	($xover{$lastheader} .= $1) =~ s/\s/ /g;
-	next;
+        ($xover{$lastheader} .= $1) =~ s/\s/ /g;
+        next;
       }
       foreach my $header (keys %overview) {
-	if ($line =~ m/^$header: (.+?)\r?\n/is) {
-	  ($xover{$lastheader = $header} = $1) =~ s/\s/ /g;
+        if ($line =~ m/^$header: (.+?)\r?\n/is) {
+          ($xover{$lastheader = $header} = $1) =~ s/\s/ /g;
           next LINE;
-	}
+        }
       }
       undef $lastheader;
     }
