@@ -194,7 +194,7 @@ LINE:
         next;
       }
       foreach my $header (keys %overview) {
-        if ($line =~ m/^$header: (.+?)\r?\n/is) {
+        if ($line =~ m/^$header: *(.*)\r?\n/is) {
           ($xover{$lastheader = $header} = $1) =~ s/\s/ /g;
           next LINE;
         }
