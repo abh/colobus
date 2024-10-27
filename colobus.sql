@@ -21,7 +21,7 @@ CREATE TABLE articles (
   h_messageid varchar(255) NOT NULL default '',
   h_from varchar(255) NOT NULL default '',
   h_subject varchar(255) NOT NULL default '',
-  h_references varchar(255) NOT NULL default '',
+  h_references varchar(8192) NOT NULL default '',
   h_lines mediumint(8) unsigned NOT NULL default '0',
   h_bytes int(10) unsigned NOT NULL default '0',
   PRIMARY KEY  (group_id,id),
